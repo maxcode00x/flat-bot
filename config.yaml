@@ -1,0 +1,64 @@
+# ============================================================
+#  Настройки поиска. Меняй цифры и сохраняй (commit) — бот
+#  подхватит их при следующей проверке.
+# ============================================================
+
+settings:
+  first_run_send: 3   # сколько свежих объявлений прислать при первом запуске поиска
+  max_per_run: 15     # не больше стольких сообщений за одну проверку
+
+# Каждый блок "- name:" — отдельный поиск. Можно добавлять сколько угодно.
+#
+# Поля:
+#   name          — название (видно в сообщении). Если меняешь название,
+#                   поиск считается новым и снова пришлёт 3 свежих
+#   source        — olx или otodom
+#   type          — flat (квартира) или room (комната)
+#   city          — szczecin, warszawa, krakow, wroclaw, poznan, gdansk, gdynia,
+#                   lodz, katowice, lublin, bydgoszcz, bialystok
+#                   (для OLX подойдёт любой город как в адресе olx.pl)
+#   price_min / price_max — цена аренды в zł
+#   total_max     — максимум ВМЕСТЕ с czynsz (если он указан в объявлении)
+#   rooms         — список: [1, 2, 3]. На OLX 4 = «4 и больше»
+#   area_min / area_max — площадь, m²
+#   private_only  — true = только от частников (без агентств)
+#   districts     — только эти районы, напр. ["Pogodno", "Śródmieście", "Niebuszewo"]
+#   exclude_words — пропускать объявления с этими словами
+#   url           — вместо фильтров можно вставить готовую ссылку поиска
+#                   с olx.pl / otodom.pl (настроил фильтры на сайте → скопировал адрес)
+#   enabled       — false = временно выключить поиск
+
+searches:
+  - name: Квартира Szczecin (OLX)
+    source: olx
+    type: flat
+    city: szczecin
+    price_max: 3500
+    total_max: 4200
+    rooms: [2, 3]
+    area_min: 35
+    exclude_words: ["tylko dla kobiet", "tylko dla studentek", "krótkoterminowy", "na doby"]
+
+  - name: Квартира Szczecin (Otodom)
+    source: otodom
+    type: flat
+    city: szczecin
+    price_max: 3500
+    total_max: 4200
+    rooms: [2, 3]
+    area_min: 35
+    exclude_words: ["tylko dla kobiet", "krótkoterminowy", "na doby"]
+
+  - name: Комната Szczecin (OLX)
+    source: olx
+    type: room
+    city: szczecin
+    price_max: 1500
+    exclude_words: ["tylko dla kobiet", "tylko dla studentek", "dla pani"]
+
+  - name: Комната Szczecin (Otodom)
+    source: otodom
+    type: room
+    city: szczecin
+    price_max: 1500
+    exclude_words: ["tylko dla kobiet", "dla pani"]
