@@ -2,11 +2,11 @@ name: Поиск жилья
 
 on:
   schedule:
-    - cron: "*/10 * * * *"
-  workflow_dispatch:
+    - cron: "*/10 * * * *"   # каждые 10 минут (GitHub может запускать с опозданием на 5–15 мин)
+  workflow_dispatch:          # кнопка «Run workflow» для ручного запуска
 
 permissions:
-  contents: write
+  contents: write             # чтобы сохранять seen.json
 
 concurrency:
   group: flat-bot
@@ -15,7 +15,7 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 13
     steps:
       - uses: actions/checkout@v4
 
@@ -30,6 +30,7 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RUN_SECONDS: "480"   # после поиска ещё 8 минут отвечать на сообщения сразу
         run: python bot.py
 
       - name: Сохранить просмотренные
