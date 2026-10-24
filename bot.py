@@ -2,10 +2,10 @@
 """Бот поиска жилья в Польше: OLX + Otodom -> Telegram.
 
 Запускается по расписанию (GitHub Actions). За один запуск:
-  1. читает новые сообщения боту (сохранённые фильтры из кнопки «⚙️ Фильтры»),
-  2. ищет объявления по фильтрам на OLX и Otodom,
-  3. присылает в Telegram только новые,
-  4. сохраняет фильтры и просмотренные объявления в seen.json.
+  1. ищет новые объявления на OLX и Otodom по фильтрам каждого пользователя,
+  2. присылает каждому только новые подходящие,
+  3. несколько минут отвечает на сообщения (Start, сохранение фильтров) почти сразу,
+  4. сохраняет фильтры и просмотренные объявления в зашифрованный seen.json.
 """
 from __future__ import annotations
 
@@ -587,18 +587,18 @@ def clean_filters(raw: dict) -> dict:
 # ---------------------------------------------------------------- telegram
 
 class Telegram:
-    def __init__(self, token: str, chat_ids: list[str], dry_run: bool = False):
+    def __init__(self, token: str, dry_run: bool = False):
         self.base = f"https://api.telegram.org/bot{token}"
-        self.chat_ids = chat_ids
         self.dry_run = dry_run
 
-    def call(self, method: str, payload: dict) -> dict | None:
+    def call(self, method: str, payload: dict, timeout: int = 40) -> dict:
+        """Возвращает ответ Telegram; при ошибке {"ok": False, "error_code": ...}."""
         if self.dry_run:
             log("[dry-run]", method, (payload.get("caption") or payload.get("text") or "")[:120])
             return {"ok": True, "result": []}
         for _ in range(3):
             try:
-                r = requests.post(f"{self.base}/{method}", json=payload, timeout=40)
+                r = requests.post(f"{self.base}/{method}", json=payload, timeout=timeout)
             except requests.RequestException as e:
                 log("telegram error:", e)
                 time.sleep(3)
@@ -609,27 +609,26 @@ class Telegram:
             if r.ok:
                 return r.json()
             log("telegram", method, r.status_code, r.text[:200])
-            return None
-        return None
+            return {"ok": False, "error_code": r.status_code}
+        return {"ok": False, "error_code": 0}
 
-    def text(self, msg: str, markup: dict | None = None, chats: list[str] | None = None):
-        for cid in chats or self.chat_ids:
-            p = {"chat_id": cid, "text": msg, "parse_mode": "HTML", "disable_web_page_preview": True}
-            if markup:
-                p["reply_markup"] = markup
-            self.call("sendMessage", p)
-            time.sleep(1.1)
+    def text(self, cid: str, msg: str, markup: dict | None = None) -> dict:
+        p = {"chat_id": cid, "text": msg, "parse_mode": "HTML", "disable_web_page_preview": True}
+        if markup:
+            p["reply_markup"] = markup
+        res = self.call("sendMessage", p)
+        time.sleep(0.4)
+        return res
 
-    def ad(self, ad: Ad, label: str):
+    def ad(self, cid: str, ad: Ad, label: str) -> dict:
         cap = render(ad, label)
-        for cid in self.chat_ids:
-            ok = False
-            if ad.photo:
-                ok = bool(self.call("sendPhoto", {"chat_id": cid, "photo": ad.photo, "caption": cap,
-                                                  "parse_mode": "HTML"}))
-            if not ok:
-                self.call("sendMessage", {"chat_id": cid, "text": cap, "parse_mode": "HTML"})
-            time.sleep(1.1)
+        res = {"ok": False}
+        if ad.photo:
+            res = self.call("sendPhoto", {"chat_id": cid, "photo": ad.photo, "caption": cap, "parse_mode": "HTML"})
+        if not res.get("ok") and res.get("error_code") != 403:
+            res = self.call("sendMessage", {"chat_id": cid, "text": cap, "parse_mode": "HTML"})
+        time.sleep(1.05)
+        return res
 
 
 def render(ad: Ad, label: str) -> str:
@@ -681,7 +680,7 @@ def keyboard(f: dict) -> dict | None:
 # ---------------------------------------------------------------- состояние
 
 def _cipher():
-    """Шифр для seen.json: репозиторий публичный, а там твои фильтры. Ключ — из токена бота."""
+    """Шифр для seen.json: репозиторий публичный, а там фильтры людей. Ключ — из токена бота."""
     from cryptography.fernet import Fernet
     import hashlib
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
@@ -691,7 +690,12 @@ def _cipher():
     return Fernet(key)
 
 
-def load_state() -> dict:
+def new_user() -> dict:
+    return {"filters": None, "baseline": True, "seen": {}, "blocked": False,
+            "joined": datetime.now(timezone.utc).isoformat()[:10]}
+
+
+def load_state(admins: list[str]) -> dict:
     st = {}
     if STATE_PATH.exists():
         raw = STATE_PATH.read_text("utf-8").strip()
@@ -704,19 +708,22 @@ def load_state() -> dict:
         except Exception:  # noqa: BLE001
             log("seen.json не читается (сменился токен?) — начинаю заново")
             st = {}
-    st.setdefault("seen", {})
-    st.setdefault("errors", {})
+    if "users" not in st:                                 # переезд с версии «для одного»
+        old_f, old_seen = st.get("filters"), st.get("seen") or {}
+        st = {"offset": st.get("offset", 0), "errors": {}, "users": {}}
+        for a in admins:
+            u = new_user()
+            u["filters"], u["seen"], u["baseline"] = old_f, dict(old_seen), old_f is None
+            st["users"][a] = u
     st.setdefault("offset", 0)
-    st.setdefault("filters", None)
-    st.setdefault("baseline", True)
-    st.setdefault("welcomed", False)
+    st.setdefault("errors", {})
     return st
 
 
-def save_state(st: dict, keep_days: int = 90):
+def save_state(st: dict, keep_days: int = 60):
     cutoff = (datetime.now(timezone.utc) - timedelta(days=keep_days)).isoformat()
-    st["seen"] = {k: v for k, v in st["seen"].items() if v >= cutoff}
-    st.pop("initialized", None)              # поле старой версии
+    for u in st["users"].values():
+        u["seen"] = {k: v for k, v in u["seen"].items() if v >= cutoff}
     data = json.dumps(st, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     c = _cipher()
     STATE_PATH.write_text(c.encrypt(data.encode()).decode() if c else data, "utf-8")
@@ -724,86 +731,102 @@ def save_state(st: dict, keep_days: int = 90):
 
 # ---------------------------------------------------------------- сообщения боту
 
-WELCOME = ("Привет! Я ищу жильё на OLX и Otodom и присылаю только новые объявления.\n\n"
-           "Нажми <b>⚙️ Фильтры</b> внизу, выбери, что ищешь, и сохрани. "
-           "Новые фильтры я применяю при следующей проверке — обычно в течение 10–15 минут.")
+WELCOME = ("Привет! Я ищу квартиры и комнаты на <b>OLX</b> и <b>Otodom</b> и присылаю только новые "
+           "объявления по твоим фильтрам.\n\n"
+           "Нажми <b>⚙️ Фильтры</b> внизу, выбери, что ищешь, и сохрани. Пока фильтры не выбраны, я ничего не присылаю.\n\n"
+           "Проверка новых объявлений — примерно раз в 10 минут. Остановить — переключатель «Поиск на паузе» "
+           "в фильтрах.")
+MAX_USERS = int(os.environ.get("MAX_USERS", "300"))
 
 
-def process_updates(tg: Telegram, st: dict) -> None:
-    res = tg.call("getUpdates", {"offset": st["offset"] + 1 if st["offset"] else 0, "timeout": 0,
-                                 "allowed_updates": ["message"]})
-    if not res:
-        return
-    allowed = set(tg.chat_ids)
-    for upd in res.get("result", []):
+def handle_updates(tg: Telegram, st: dict, wait: int = 0) -> None:
+    res = tg.call("getUpdates", {"offset": st["offset"] + 1 if st["offset"] else 0, "timeout": wait,
+                                 "allowed_updates": ["message"]}, timeout=wait + 15)
+    for upd in res.get("result", []) or []:
         st["offset"] = max(st["offset"], upd["update_id"])
         msg = upd.get("message") or {}
-        cid = str((msg.get("chat") or {}).get("id", ""))
-        if cid not in allowed:
+        chat = msg.get("chat") or {}
+        if chat.get("type") != "private":
             continue
+        cid = str(chat.get("id"))
+        user = st["users"].get(cid)
+        if user is None:
+            if len(st["users"]) >= MAX_USERS:
+                tg.text(cid, "Извини, сейчас бот не принимает новых пользователей.")
+                continue
+            user = st["users"][cid] = new_user()
+            log("новый пользователь")
+        user["blocked"] = False
         wad = msg.get("web_app_data")
         if wad:
             try:
                 f = clean_filters(json.loads(wad.get("data") or "{}"))
             except (json.JSONDecodeError, TypeError, ValueError) as ex:
-                tg.text(f"Не смог прочитать фильтры: {html.escape(str(ex))}", chats=[cid])
+                tg.text(cid, f"Не смог прочитать фильтры: {html.escape(str(ex))}")
                 continue
-            old = st.get("filters") or {}
+            old = user.get("filters") or {}
             only_pause = {k: v for k, v in old.items() if k != "paused"} == {k: v for k, v in f.items() if k != "paused"}
-            st["filters"] = f
+            user["filters"] = f
             if not only_pause:
-                st["baseline"] = True
-            state = "⏸ <b>Поиск на паузе.</b>" if f["paused"] else "✅ <b>Фильтры сохранены.</b>"
-            tail = "" if f["paused"] else (
-                f"\n\nСейчас пришлю {f['first']} самых свежих подходящих, дальше — только новые."
-                if not only_pause and f["first"] else "\n\nДальше присылаю только новые объявления.")
-            tg.text(f"{state}\n\n{summary(f)}{tail}", markup=keyboard(f))
-        elif (msg.get("text") or "").startswith("/"):
-            st["welcomed"] = True
-            f = st.get("filters") or DEFAULT_FILTERS
-            body = WELCOME if not st.get("filters") else "Текущие фильтры:\n\n" + summary(f)
-            tg.text(body, markup=keyboard(f), chats=[cid])
+                user["baseline"] = True
+            if f["paused"]:
+                head, tail = "⏸ <b>Поиск на паузе.</b>", "\n\nЧтобы продолжить — открой фильтры и выключи паузу."
+            else:
+                head = "✅ <b>Фильтры сохранены.</b>"
+                tail = (f"\n\nСейчас пришлю {f['first']} самых свежих подходящих, дальше — только новые."
+                        if not only_pause and f["first"] else "\n\nДальше присылаю только новые объявления.")
+            tg.text(cid, f"{head}\n\n{summary(f)}{tail}", markup=keyboard(f))
+        elif (msg.get("text") or "").startswith("/start") or not user.get("filters"):
+            tg.text(cid, WELCOME, markup=keyboard(user.get("filters") or DEFAULT_FILTERS))
+        else:
+            f = user["filters"]
+            state = "⏸ Поиск на паузе.\n\n" if f.get("paused") else ""
+            tg.text(cid, f"{state}Твои фильтры:\n\n{summary(f)}\n\nИзменить — кнопка <b>⚙️ Фильтры</b>.",
+                    markup=keyboard(f))
 
 
-# ---------------------------------------------------------------- main
+# ---------------------------------------------------------------- поиск
 
-def main() -> int:
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-    chats = [c.strip() for c in os.environ.get("TELEGRAM_CHAT_ID", "").split(",") if c.strip()]
-    dry = os.environ.get("DRY_RUN") == "1" or not token or not chats
-    if dry:
-        log("Нет TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID — режим проверки, в Telegram ничего не уходит")
-    tg = Telegram(token, chats, dry_run=dry)
-    st = load_state()
+def needs_own_otodom(f: dict, kind: str) -> bool:
+    """Фильтры, которые Otodom не отдаёт в списке объявлений — их можно применить только в запросе."""
+    return kind == "flat" and bool(f.get("bt") or f.get("ex") or f.get("yearMin") or f.get("heat"))
 
-    process_updates(tg, st)
-    f = st.get("filters")
-    if not f:
-        if not st["welcomed"]:
-            tg.text(WELCOME, markup=keyboard(DEFAULT_FILTERS))
-            st["welcomed"] = True
-        log("Фильтры ещё не выбраны — ничего не ищу")
-        if not dry:
-            save_state(st)
-        return 0
-    st["welcomed"] = True
-    if f.get("paused"):
-        log("Поиск на паузе")
-        if not dry:
-            save_state(st)
-        return 0
 
+class Pages:
+    """Кэш страниц за один проход: одинаковые запросы разных людей скачиваются один раз."""
+
+    def __init__(self):
+        self.cache: dict[str, list[Ad] | Exception] = {}
+
+    def get(self, src: str, url: str) -> list[Ad]:
+        if url not in self.cache:
+            try:
+                self.cache[url] = SOURCES[src][1](fetch(url))
+                time.sleep(1.5)
+            except Exception as e:  # noqa: BLE001
+                self.cache[url] = e
+        res = self.cache[url]
+        if isinstance(res, Exception):
+            raise res
+        return res
+
+
+def search_user(tg: Telegram, st: dict, cid: str, user: dict, pages: Pages, admins: list[str]) -> int:
+    f = user["filters"]
+    baseline = user.get("baseline", True)
     now = datetime.now(timezone.utc).isoformat()
-    baseline = st.get("baseline", True)
-    fresh_all: list[tuple[Ad, str]] = []
+    found: dict[str, tuple[Ad, str]] = {}
     ok_any = False
     for src in f["src"]:
-        build, parse = SOURCES[src]
         for kind in kinds(f):
-            sid = f"{src}-{kind}"
             label = {"flat": "квартира", "room": "комната"}[kind]
+            if baseline or (src == "otodom" and needs_own_otodom(f, kind)):
+                url = SOURCES[src][0](f, kind)                       # запрос с фильтрами человека
+            else:
+                url = SOURCES[src][0]({"city": f.get("city")}, kind)  # общая лента новых, фильтруем сами
+            sid = f"{src}-{kind}-{norm(f.get('city'))}"
             try:
-                ads = parse(fetch(build(f, kind)))
+                ads = pages.get(src, url)
                 st["errors"].pop(sid, None)
                 ok_any = True
             except Exception as e:  # noqa: BLE001
@@ -811,40 +834,84 @@ def main() -> int:
                 st["errors"][sid] = n
                 log(f"[{sid}] ошибка: {e}")
                 if n == 3:
-                    tg.text(f"⚠️ {src.upper()} ({label}) не отвечает уже 3 проверки подряд:\n"
-                            f"<code>{html.escape(str(e))[:300]}</code>")
+                    for a in admins:
+                        tg.text(a, f"⚠️ {html.escape(sid)} не отвечает 3 проверки подряд:\n"
+                                   f"<code>{html.escape(str(e))[:300]}</code>")
                 continue
-            matched = [a for a in ads if passes(a, f, kind)]
-            fresh = [a for a in matched if a.key not in st["seen"]]
-            log(f"[{sid}] на странице {len(ads)}, по фильтрам {len(matched)}, новых {len(fresh)}")
-            fresh_all += [(a, label) for a in fresh]
-            time.sleep(2)
-
-    # одно объявление может прийти и с OLX, и с Otodom
-    uniq: dict[str, tuple[Ad, str]] = {}
-    for a, label in fresh_all:
-        uniq.setdefault(a.key, (a, label))
-    fresh_list = sorted(uniq.values(), key=lambda x: x[0].created)
-
+            for a in ads:
+                if a.key not in user["seen"] and a.key not in found and passes(a, f, kind):
+                    found[a.key] = (a, label)
+    fresh = sorted(found.values(), key=lambda x: x[0].created)
     if baseline:
         if not ok_any:
-            if not dry:
-                save_state(st)
             return 0
-        to_send = fresh_list[-f["first"]:] if f["first"] else []
-        for a, _ in fresh_list:
-            st["seen"][a.key] = now
-        st["baseline"] = False
-        log(f"Новые фильтры: отмечено {len(fresh_list)} текущих объявлений, присылаю {len(to_send)}")
+        for a, _ in fresh:
+            user["seen"][a.key] = now
+        to_send = fresh[-f["first"]:] if f["first"] else []
+        user["baseline"] = False
     else:
-        to_send = fresh_list[:15]               # остальное — в следующую проверку
+        to_send = fresh[:15]                    # остальное — в следующую проверку
+    sent = 0
     for a, label in to_send:
-        tg.ad(a, label)
-        st["seen"][a.key] = now
+        res = tg.ad(cid, a, label)
+        if res.get("error_code") == 403:        # человек заблокировал бота
+            user["blocked"] = True
+            break
+        user["seen"][a.key] = now
+        sent += 1
+    return sent
+
+
+def search_round(tg: Telegram, st: dict, admins: list[str], only: list[str] | None = None) -> None:
+    pages = Pages()
+    total = 0
+    active = [(cid, u) for cid, u in st["users"].items()
+              if u.get("filters") and not u["filters"].get("paused") and not u.get("blocked")
+              and (only is None or cid in only)]
+    for cid, u in active:
+        total += search_user(tg, st, cid, u, pages, admins)
+    log(f"проверка: людей {len(active)}, страниц {len(pages.cache)}, отправлено {total}")
+
+
+# ---------------------------------------------------------------- main
+
+def main() -> int:
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    admins = [c.strip() for c in os.environ.get("TELEGRAM_CHAT_ID", "").split(",") if c.strip()]
+    dry = os.environ.get("DRY_RUN") == "1" or not token
+    if dry:
+        log("Нет TELEGRAM_BOT_TOKEN — режим проверки, в Telegram ничего не уходит")
+    tg = Telegram(token, dry_run=dry)
+    st = load_state(admins)
+    listen = int(os.environ.get("RUN_SECONDS", "0"))      # сколько секунд слушать сообщения после поиска
+    every = int(os.environ.get("SEARCH_EVERY", "600"))
+    started = time.time()
+
+    handle_updates(tg, st)
+    search_round(tg, st, admins)
+    last = time.time()
+    if not dry:
+        save_state(st)
+
+    while time.time() - started < listen - 5:
+        left = listen - (time.time() - started)
+        t0 = time.time()
+        handle_updates(tg, st, wait=int(max(1, min(25, left - 3))))
+        if time.time() - t0 < 1:
+            time.sleep(2)                                   # Telegram ответил ошибкой сразу — не долбим
+        pending = [cid for cid, u in st["users"].items()
+                   if u.get("baseline") and u.get("filters") and not u["filters"].get("paused")]
+        if pending:
+            search_round(tg, st, admins, only=pending)       # новые фильтры — ищем сразу
+        if time.time() - last >= every:
+            search_round(tg, st, admins)
+            last = time.time()
+        if not dry:
+            save_state(st)
 
     if not dry:
         save_state(st)
-    log(f"Готово, отправлено {len(to_send)}")
+    log(f"Готово. Пользователей: {len(st['users'])}")
     return 0
 
 
