@@ -122,6 +122,16 @@
       <button type="button" class="chip" data-v="LOFT">Loft</button>
       <button type="button" class="chip" data-v="OTHER">Другое</button>
     </div>
+    <div class="label">Отопление</div>
+    <div class="chips" id="heat">
+      <button type="button" class="chip" data-v="URBAN">Городское (miejskie)</button>
+      <button type="button" class="chip" data-v="GAS">Газовое</button>
+      <button type="button" class="chip" data-v="ELECTRICAL">Электрическое</button>
+      <button type="button" class="chip" data-v="BOILER_ROOM">Котельная</button>
+      <button type="button" class="chip" data-v="TILED_STOVE">Кафельная печь</button>
+      <button type="button" class="chip" data-v="OTHER">Другое</button>
+    </div>
+    <div class="hint">На Otodom — фильтр сайта. На OLX смотрю текст: если отопление не упомянуто, объявление всё равно покажу.</div>
     <div class="label">Обязательно есть</div>
     <div class="chips" id="ex">
       <button type="button" class="chip" data-v="BALCONY">Балкон</button>
@@ -195,7 +205,7 @@ const SZCZECIN = {
 const ZONE_RU = {"Śródmieście": "Śródmieście — центр", "Północ": "Północ — север", "Zachód": "Zachód — запад", "Prawobrzeże": "Prawobrzeże — правый берег"};
 const ALL = Object.values(SZCZECIN).flat();
 const DEF = {type:"flat", src:["olx","otodom"], city:"szczecin", dist:[], noDist:true, pMin:null, pMax:null, tMax:null,
-  rooms:[], aMin:null, aMax:null, floors:[], bt:[], ex:[], furn:false, pets:false, yearMin:null, ppl:[], pref:"",
+  rooms:[], aMin:null, aMax:null, floors:[], bt:[], ex:[], heat:[], furn:false, pets:false, yearMin:null, ppl:[], pref:"",
   priv:false, excl:"tylko dla kobiet, tylko dla studentek, na doby, krótkoterminowy", incl:"", first:3, paused:false};
 
 const tg = window.Telegram && window.Telegram.WebApp;
@@ -259,7 +269,7 @@ setSeg("type", cur.type); setMulti("src", cur.src); $("city").value = cur.city |
 zones.querySelectorAll(".dist .chip").forEach(b => pressed(b, (cur.dist || []).includes(b.dataset.v)));
 $("noDist").checked = cur.noDist !== false;
 for (const k of ["pMin","pMax","tMax","aMin","aMax","yearMin"]) $(k).value = cur[k] ?? "";
-setMulti("rooms", cur.rooms || []); setMulti("floors", cur.floors || []); setMulti("bt", cur.bt || []); setMulti("ex", cur.ex || []);
+setMulti("rooms", cur.rooms || []); setMulti("floors", cur.floors || []); setMulti("bt", cur.bt || []); setMulti("ex", cur.ex || []); setMulti("heat", cur.heat || []);
 setMulti("ppl", cur.ppl || []); $("pref").value = cur.pref || "";
 for (const k of ["furn","pets","priv","paused"]) $(k).checked = !!cur[k];
 $("excl").value = cur.excl || ""; $("incl").value = cur.incl || "";
@@ -290,7 +300,7 @@ function collect() {
     noDist: $("noDist").checked,
     pMin: numOrNull("pMin"), pMax: numOrNull("pMax"), tMax: numOrNull("tMax"),
     rooms: getMulti("rooms").map(Number), aMin: numOrNull("aMin"), aMax: numOrNull("aMax"),
-    floors: getMulti("floors").map(Number), bt: getMulti("bt"), ex: getMulti("ex"),
+    floors: getMulti("floors").map(Number), bt: getMulti("bt"), ex: getMulti("ex"), heat: getMulti("heat"),
     furn: $("furn").checked, pets: $("pets").checked, yearMin: numOrNull("yearMin"),
     ppl: getMulti("ppl").map(Number), pref: $("pref").value, priv: $("priv").checked,
     excl: $("excl").value.trim(), incl: $("incl").value.trim(),
