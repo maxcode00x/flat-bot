@@ -690,6 +690,9 @@ def _cipher():
     return Fernet(key)
 
 
+_SAVED: dict = {}
+
+
 def new_user() -> dict:
     return {"filters": None, "baseline": True, "seen": {}, "blocked": False,
             "joined": datetime.now(timezone.utc).isoformat()[:10]}
@@ -705,6 +708,7 @@ def load_state(admins: list[str]) -> dict:
             elif raw:
                 c = _cipher()
                 st = json.loads(c.decrypt(raw.encode()).decode()) if c else {}
+            _SAVED["plain"] = json.dumps(st, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
         except Exception:  # noqa: BLE001
             log("seen.json не читается (сменился токен?) — начинаю заново")
             st = {}
@@ -725,8 +729,11 @@ def save_state(st: dict, keep_days: int = 60):
     for u in st["users"].values():
         u["seen"] = {k: v for k, v in u["seen"].items() if v >= cutoff}
     data = json.dumps(st, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    if data == _SAVED.get("plain") and STATE_PATH.exists():
+        return                                   # ничего не изменилось — не трогаем файл (меньше коммитов)
     c = _cipher()
     STATE_PATH.write_text(c.encrypt(data.encode()).decode() if c else data, "utf-8")
+    _SAVED["plain"] = data
 
 
 # ---------------------------------------------------------------- сообщения боту
