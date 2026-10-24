@@ -1,12 +1,13 @@
 name: Поиск жилья
 
 on:
+  workflow_dispatch:          # ручной запуск и автоперезапуск в конце каждого круга
   schedule:
-    - cron: "*/10 * * * *"   # каждые 10 минут (GitHub может запускать с опозданием на 5–15 мин)
-  workflow_dispatch:          # кнопка «Run workflow» для ручного запуска
+    - cron: "*/30 * * * *"    # запасной вариант: поднимет бота, если цепочка оборвалась
 
 permissions:
-  contents: write             # чтобы сохранять seen.json
+  contents: write             # сохранять seen.json
+  actions: write              # запускать следующий круг
 
 concurrency:
   group: flat-bot
@@ -15,7 +16,7 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 13
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -26,18 +27,25 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: Проверить объявления
+      - name: Бот (поиск каждые 10 минут, ответы на сообщения сразу)
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          RUN_SECONDS: "480"   # после поиска ещё 8 минут отвечать на сообщения сразу
+          RUN_SECONDS: "1440"   # один круг — 24 минуты
+          SEARCH_EVERY: "600"   # поиск объявлений раз в 10 минут
         run: python bot.py
 
-      - name: Сохранить просмотренные
+      - name: Сохранить данные
         if: always()
         run: |
           [ -f seen.json ] || exit 0
           git config user.name "flat-bot"
           git config user.email "flat-bot@users.noreply.github.com"
           git add seen.json
-          git diff --cached --quiet || (git commit -m "seen: $(date -u +%F\ %H:%M)" && git pull --rebase && git push)
+          git diff --cached --quiet || (git commit -m "data $(date -u +%F\ %H:%M)" && git pull --rebase && git push)
+
+      - name: Запустить следующий круг
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run flat-bot.yml --ref "${{ github.ref_name }}"
