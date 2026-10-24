@@ -93,6 +93,18 @@ EXTRAS_TEXT = {
 EXTRAS_RU = {"BALCONY": "балкон", "TERRACE": "терраса", "GARDEN": "сад", "LIFT": "лифт", "GARAGE": "гараж/парковка",
              "AIR_CONDITIONING": "кондиционер", "SEPARATE_KITCHEN": "отдельная кухня", "INTERNET": "интернет"}
 
+# Отопление: код Otodom -> как это пишут в тексте объявлений OLX
+HEATING = ["URBAN", "GAS", "ELECTRICAL", "BOILER_ROOM", "TILED_STOVE", "OTHER"]
+HEATING_RU = {"URBAN": "городское (miejskie)", "GAS": "газовое", "ELECTRICAL": "электрическое",
+              "BOILER_ROOM": "котельная", "TILED_STOVE": "кафельная печь", "OTHER": "другое"}
+HEATING_TEXT = {
+    "URBAN": r"miejsk|msc|siec\w* cieplown|cieplo systemowe|c\.?\s?o\.? z sieci",
+    "GAS": r"gazow|piec dwufunkcyjny",
+    "ELECTRICAL": r"elektryczn|pompa ciepla|podlogowe elektryczne",
+    "BOILER_ROOM": r"kotlowni",
+    "TILED_STOVE": r"kaflow",
+}
+
 FLOORS_OTODOM = ["GROUND", "FIRST", "SECOND", "THIRD", "FOURTH", "FIFTH", "SIXTH", "SEVENTH", "EIGHTH",
                  "NINTH", "TENTH", "ABOVE_TENTH"]          # индекс = этаж (11 = выше 10)
 FLOOR_FROM_OTODOM = {v: i for i, v in enumerate(FLOORS_OTODOM)} | {"CELLAR": 0, "GARRET": None}
@@ -104,7 +116,7 @@ PEOPLE_OLX = {1: "one", 2: "two", 3: "three"}
 DEFAULT_FILTERS = {
     "v": 1, "type": "flat", "src": ["olx", "otodom"], "city": "szczecin", "dist": [], "noDist": True,
     "pMin": None, "pMax": None, "tMax": None, "rooms": [], "aMin": None, "aMax": None, "floors": [],
-    "bt": [], "ex": [], "furn": False, "pets": False, "yearMin": None, "ppl": [], "pref": "",
+    "bt": [], "ex": [], "heat": [], "furn": False, "pets": False, "yearMin": None, "ppl": [], "pref": "",
     "priv": False, "excl": "tylko dla kobiet, tylko dla studentek, na doby, krótkoterminowy", "incl": "",
     "first": 3, "paused": False,
 }
@@ -330,6 +342,8 @@ def otodom_url(f: dict, kind: str) -> str:
             q.append(("extras", "[" + ",".join(f["ex"]) + "]"))
         if f.get("yearMin"):
             q.append(("buildYearMin", str(f["yearMin"])))
+        if f.get("heat"):
+            q.append(("heating", "[" + ",".join(f["heat"]) + "]"))
     else:
         estate = "pokoj"
         ppl = [PEOPLE_OTODOM[int(p)] for p in sorted(f.get("ppl") or [])]
@@ -408,6 +422,24 @@ def district_ok(ad: Ad, f: dict) -> bool:
     return bool(f.get("noDist", True))
 
 
+def heating_types(t: str) -> set[str]:
+    """Какое отопление упомянуто рядом со словом ogrzewanie / c.o. в тексте объявления."""
+    found = set()
+    windows = [t[max(0, m.start() - 40): m.end() + 60] for m in re.finditer(r"ogrzew|\bc\.?\s?o\.?\b|grzewcz|kotl|piec", t)]
+    for w in windows:
+        for code, rx in HEATING_TEXT.items():
+            if re.search(rx, w):
+                found.add(code)
+    return found
+
+
+def heating_ok(t: str, wanted: list[str]) -> bool:
+    found = heating_types(t)
+    if not found:
+        return True                  # в объявлении не сказано — не отбрасываем
+    return bool(found & set(wanted))
+
+
 def passes(ad: Ad, f: dict, kind: str) -> bool:
     if f.get("pMin") and ad.price is not None and ad.price < f["pMin"]:
         return False
@@ -444,6 +476,8 @@ def passes(ad: Ad, f: dict, kind: str) -> bool:
                     continue
                 if not re.search(EXTRAS_TEXT[code], t):
                     return False
+            if f.get("heat") and not heating_ok(t, f["heat"]):
+                return False
     else:
         if f.get("ppl") and ad.people is not None and ad.people not in {int(p) for p in f["ppl"]}:
             return False
@@ -498,6 +532,8 @@ def summary(f: dict) -> str:
             fl.append(f"дом от {f['yearMin']} г.")
         if fl:
             lines.append("🏠 " + " · ".join(fl))
+        if f.get("heat"):
+            lines.append("🔥 отопление: " + ", ".join(HEATING_RU[h] for h in f["heat"]))
         ex = [EXTRAS_RU[x] for x in f.get("ex") or [] if x in EXTRAS_RU]
         if f.get("furn"):
             ex.append("с мебелью")
@@ -537,6 +573,7 @@ def clean_filters(raw: dict) -> dict:
     f["ppl"] = sorted({int(x) for x in f.get("ppl") or [] if str(x).isdigit() and 1 <= int(x) <= 3})
     f["bt"] = [b for b in f.get("bt") or [] if b in BUILDING]
     f["ex"] = [x for x in f.get("ex") or [] if x in EXTRAS_TEXT]
+    f["heat"] = [x for x in f.get("heat") or [] if x in HEATING]
     f["pref"] = f["pref"] if f.get("pref") in PREF_RU else ""
     f["first"] = max(0, min(int(num(f.get("first")) or 0), 10))
     f["excl"] = str(f.get("excl") or "")[:500]
