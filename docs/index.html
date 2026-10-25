@@ -61,6 +61,18 @@
     <label class="switch"><span><span class="label" data-i18n="pause_title"></span><br><span class="hint" data-i18n="pause_hint"></span></span><input type="checkbox" id="paused"></label>
   </section>
 
+  <section id="profBox">
+    <h2 data-i18n="h_prof"></h2>
+    <div class="seg" id="ptabs">
+      <button type="button" data-v="0">1</button>
+      <button type="button" data-v="1">2</button>
+      <button type="button" data-v="2">3</button>
+    </div>
+    <input type="text" id="pname" maxlength="30" data-i18n-ph="ph_prof_name">
+    <label class="switch"><span data-i18n="prof_on"></span><input type="checkbox" id="pon"></label>
+    <div class="hint" data-i18n="prof_hint"></div>
+  </section>
+
   <section>
     <h2 data-i18n="h_what"></h2>
     <div class="seg" id="type">
@@ -188,6 +200,48 @@
       <button type="button" data-v="10">10</button>
     </div>
     <div class="hint" data-i18n="first_hint"></div>
+  </section>
+
+  <section>
+    <h2 data-i18n="h_me"></h2>
+    <div class="hint" data-i18n="me_hint"></div>
+    <div class="label" data-i18n="me_name"></div>
+    <input type="text" id="meName" maxlength="40" placeholder="Maksim">
+    <div class="label" data-i18n="me_move"></div>
+    <input type="text" id="meMove" maxlength="40" data-i18n-ph="ph_move">
+    <div class="label" data-i18n="me_people"></div>
+    <div class="seg" id="mePeople">
+      <button type="button" data-v="">—</button>
+      <button type="button" data-v="1">1</button>
+      <button type="button" data-v="2">2</button>
+      <button type="button" data-v="3">3</button>
+      <button type="button" data-v="4">4+</button>
+    </div>
+    <div class="label" data-i18n="me_job"></div>
+    <select id="meJob">
+      <option value="" data-i18n="opt_none"></option>
+      <option value="work" data-i18n="job_work"></option>
+      <option value="study" data-i18n="job_study"></option>
+      <option value="both" data-i18n="job_both"></option>
+    </select>
+    <div class="label" data-i18n="me_pets"></div>
+    <select id="mePets">
+      <option value="" data-i18n="opt_none"></option>
+      <option value="no" data-i18n="pets_no"></option>
+      <option value="cat" data-i18n="pets_cat"></option>
+      <option value="dog" data-i18n="pets_dog"></option>
+      <option value="small" data-i18n="pets_small"></option>
+    </select>
+    <label class="switch"><span data-i18n="me_smoke"></span><input type="checkbox" id="meSmoke"></label>
+    <div class="label" data-i18n="me_note"></div>
+    <textarea id="meNote" maxlength="200" data-i18n-ph="ph_note"></textarea>
+  </section>
+
+  <section>
+    <h2 data-i18n="h_quiet"></h2>
+    <label class="switch"><span data-i18n="quiet_on"></span><input type="checkbox" id="qOn"></label>
+    <div class="range"><select id="qFrom"></select><span class="hint">—</span><select id="qTo"></select></div>
+    <div class="hint" data-i18n="quiet_hint"></div>
     <div id="err" role="alert"></div>
   </section>
 </main>
@@ -196,6 +250,15 @@
 <script>
 const I18N = {
   ru: {
+    h_prof: "Профиль поиска", ph_prof_name: "Название, например «Квартира Pogodno»", prof_on: "Профиль включён",
+    prof_hint: "Можно держать до 3 разных поисков. Фильтры ниже — для выбранного профиля; «О себе» и тихие часы общие.",
+    h_me: "О себе — для сообщения владельцу", me_hint: "Нужно для кнопки ✉️ Написать: бот соберёт вежливое сообщение на польском.",
+    me_name: "Имя", me_move: "С какой даты нужна квартира", ph_move: "например: zaraz, 1 grudnia", me_people: "Сколько человек",
+    me_job: "Работа / учёба", opt_none: "Не указывать", job_work: "Работаю (работаем)", job_study: "Учусь (учимся)",
+    job_both: "Работаем и учимся", me_pets: "Животные", pets_no: "Нет животных", pets_cat: "Кот", pets_dog: "Собака",
+    pets_small: "Маленькое животное", me_smoke: "Не курю", me_note: "Добавить от себя (по-польски)",
+    ph_note: "например: jesteśmy spokojną parą", h_quiet: "Тихие часы", quiet_on: "Не присылать ночью",
+    quiet_hint: "В эти часы бот молчит, а потом присылает всё, что нашёл, одной пачкой.",
     title: "Фильтры поиска жилья",
     pause_title: "Поиск на паузе", pause_hint: "Бот не присылает объявления, пока пауза включена",
     h_what: "Что ищу", t_flat: "Квартира", t_room: "Комната", t_both: "Оба",
@@ -226,6 +289,15 @@ const I18N = {
     err_area: "Площадь «от» больше, чем «до».", open_in_tg: "Открой эту страницу кнопкой «⚙️ Фильтры» в боте — тогда фильтры сохранятся.",
   },
   pl: {
+    h_prof: "Profil wyszukiwania", ph_prof_name: "Nazwa, np. „Mieszkanie Pogodno”", prof_on: "Profil włączony",
+    prof_hint: "Możesz mieć do 3 różnych wyszukiwań. Filtry poniżej dotyczą wybranego profilu; „O mnie” i godziny ciszy są wspólne.",
+    h_me: "O mnie — do wiadomości dla właściciela", me_hint: "Potrzebne do przycisku ✉️ Napisz: bot ułoży uprzejmą wiadomość po polsku.",
+    me_name: "Imię", me_move: "Od kiedy szukasz", ph_move: "np.: zaraz, 1 grudnia", me_people: "Ile osób",
+    me_job: "Praca / nauka", opt_none: "Nie podawaj", job_work: "Pracuję (pracujemy)", job_study: "Studiuję (studiujemy)",
+    job_both: "Pracujemy i studiujemy", me_pets: "Zwierzęta", pets_no: "Bez zwierząt", pets_cat: "Kot", pets_dog: "Pies",
+    pets_small: "Małe zwierzę", me_smoke: "Nie palę", me_note: "Dodaj coś od siebie",
+    ph_note: "np.: jesteśmy spokojną parą", h_quiet: "Godziny ciszy", quiet_on: "Nie wysyłaj w nocy",
+    quiet_hint: "W tych godzinach bot milczy, a potem wysyła wszystko, co znalazł, naraz.",
     title: "Filtry wyszukiwania mieszkań",
     pause_title: "Wyszukiwanie wstrzymane", pause_hint: "Bot nie wysyła ogłoszeń, dopóki pauza jest włączona",
     h_what: "Czego szukam", t_flat: "Mieszkanie", t_room: "Pokój", t_both: "Oba",
@@ -256,6 +328,15 @@ const I18N = {
     err_area: "Powierzchnia „od” jest większa niż „do”.", open_in_tg: "Otwórz tę stronę przyciskiem „⚙️ Filtry” w bocie — wtedy filtry się zapiszą.",
   },
   en: {
+    h_prof: "Search profile", ph_prof_name: "Name, e.g. “Flat Pogodno”", prof_on: "Profile enabled",
+    prof_hint: "You can keep up to 3 different searches. The filters below are for the selected profile; “About me” and quiet hours are shared.",
+    h_me: "About me — for messages to owners", me_hint: "Used by the ✉️ Message button: the bot writes a polite message in Polish.",
+    me_name: "Name", me_move: "Move-in date", ph_move: "e.g.: zaraz, 1 grudnia", me_people: "How many people",
+    me_job: "Work / study", opt_none: "Don't say", job_work: "Working", job_study: "Studying",
+    job_both: "Working and studying", me_pets: "Pets", pets_no: "No pets", pets_cat: "Cat", pets_dog: "Dog",
+    pets_small: "Small pet", me_smoke: "Non-smoker", me_note: "Add something (in Polish)",
+    ph_note: "e.g.: jesteśmy spokojną parą", h_quiet: "Quiet hours", quiet_on: "Don't send at night",
+    quiet_hint: "During these hours the bot stays silent, then sends everything it found at once.",
     title: "Home search filters",
     pause_title: "Search paused", pause_hint: "The bot won't send listings while the pause is on",
     h_what: "Looking for", t_flat: "Flat", t_room: "Room", t_both: "Both",
@@ -286,6 +367,15 @@ const I18N = {
     err_area: "Area “from” is larger than “to”.", open_in_tg: "Open this page with the “⚙️ Filters” button in the bot to save filters.",
   },
   uk: {
+    h_prof: "Профіль пошуку", ph_prof_name: "Назва, наприклад «Квартира Pogodno»", prof_on: "Профіль увімкнено",
+    prof_hint: "Можна мати до 3 різних пошуків. Фільтри нижче — для обраного профілю; «Про себе» і тихі години спільні.",
+    h_me: "Про себе — для повідомлення власнику", me_hint: "Потрібно для кнопки ✉️ Написати: бот складе ввічливе повідомлення польською.",
+    me_name: "Ім'я", me_move: "З якої дати потрібне житло", ph_move: "наприклад: zaraz, 1 grudnia", me_people: "Скільки осіб",
+    me_job: "Робота / навчання", opt_none: "Не вказувати", job_work: "Працюю (працюємо)", job_study: "Навчаюсь (навчаємось)",
+    job_both: "Працюємо й навчаємось", me_pets: "Тварини", pets_no: "Без тварин", pets_cat: "Кіт", pets_dog: "Собака",
+    pets_small: "Маленька тварина", me_smoke: "Не палю", me_note: "Додати від себе (польською)",
+    ph_note: "наприклад: jesteśmy spokojną parą", h_quiet: "Тихі години", quiet_on: "Не надсилати вночі",
+    quiet_hint: "У ці години бот мовчить, а потім надсилає все знайдене однією пачкою.",
     title: "Фільтри пошуку житла",
     pause_title: "Пошук на паузі", pause_hint: "Бот не надсилає оголошення, поки пауза увімкнена",
     h_what: "Що шукаю", t_flat: "Квартира", t_room: "Кімната", t_both: "Обидва",
@@ -344,25 +434,44 @@ const DEF = {type:"flat", src:["olx","otodom","domiporta","nol"], city:"szczecin
 const tg = window.Telegram && window.Telegram.WebApp;
 if (tg) { tg.ready(); tg.expand(); }
 const $ = id => document.getElementById(id);
+const clone = o => JSON.parse(JSON.stringify(o));
+const DEF_S = {paused:false, quiet:{on:false, from:23, to:7}, me:{}};
 
-// ---- текущие фильтры из ссылки
-function readCurrent() {
-  try {
-    const raw = params.get("f");
-    if (!raw) return {...DEF};
-    const b64 = raw.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((raw.length + 3) % 4);
-    const json = new TextDecoder().decode(Uint8Array.from(atob(b64), c => c.charCodeAt(0)));
-    const f = JSON.parse(json);
-    if (Array.isArray(f.dist)) f.dist = f.dist.map(i => typeof i === "number" ? ALL[i] : i).filter(Boolean);
-    return {...DEF, ...f, excl: f.excl ?? ""};
-  } catch (e) { return {...DEF}; }
+function decode(raw) {
+  const b64 = raw.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((raw.length + 3) % 4);
+  return JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(b64), c => c.charCodeAt(0))));
 }
-const cur = readCurrent();
+function fixProfile(f) {
+  const p = {...clone(DEF), ...f};
+  if (Array.isArray(p.dist)) p.dist = p.dist.map(i => typeof i === "number" ? ALL[i] : i).filter(Boolean);
+  if (p.on === undefined) p.on = true;
+  if (p.name === undefined) p.name = "";
+  return p;
+}
+// ---- текущие настройки и профили из ссылки
+let settings = clone(DEF_S), profiles = [];
+try {
+  const raw = params.get("f");
+  if (raw) {
+    const obj = decode(raw);
+    if (obj && Array.isArray(obj.p)) {
+      settings = {...clone(DEF_S), ...(obj.s || {})};
+      profiles = obj.p.map(fixProfile);
+    } else if (obj) {
+      settings.paused = !!obj.paused;
+      profiles = [fixProfile(obj)];
+    }
+  }
+} catch (e) {}
+if (!profiles.length) profiles = [fixProfile({})];
+while (profiles.length < 3) profiles.push(fixProfile({on: false}));
+let curIdx = 0;
 
 // ---- построение элементов
 const fl = $("floors");
 [["0", L.ground],["1","1"],["2","2"],["3","3"],["4","4"],["5","5"],["6","6"],["7","7"],["8","8"],["9","9"],["10","10"],["11","10+"]]
   .forEach(([v, t]) => { const b = document.createElement("button"); b.type = "button"; b.className = "chip"; b.dataset.v = v; b.textContent = t; fl.appendChild(b); });
+for (const id of ["qFrom", "qTo"]) for (let h = 0; h < 24; h++) { const o = document.createElement("option"); o.value = h; o.textContent = String(h).padStart(2, "0") + ":00"; $(id).appendChild(o); }
 
 const zones = $("zones");
 for (const [zone, list] of Object.entries(SZCZECIN)) {
@@ -379,7 +488,7 @@ for (const [zone, list] of Object.entries(SZCZECIN)) {
 function pressed(el, on) { el.setAttribute("aria-pressed", on ? "true" : "false"); }
 function setMulti(id, values) { $(id).querySelectorAll("[data-v]").forEach(b => pressed(b, values.map(String).includes(b.dataset.v))); }
 function getMulti(id) { return [...$(id).querySelectorAll('[aria-pressed="true"]')].map(b => b.dataset.v); }
-function setSeg(id, v) { $(id).querySelectorAll("button").forEach(b => pressed(b, b.dataset.v === String(v))); }
+function setSeg(id, v) { $(id).querySelectorAll("button").forEach(b => pressed(b, b.dataset.v === String(v ?? ""))); }
 function getSeg(id) { const b = $(id).querySelector('[aria-pressed="true"]'); return b ? b.dataset.v : null; }
 
 function refreshZones() {
@@ -389,6 +498,14 @@ function refreshZones() {
     z.querySelector(".link").textContent = allOn ? L.unsel_all : L.sel_all;
   });
 }
+function refreshTabs() {
+  $("ptabs").querySelectorAll("button").forEach((b, i) => {
+    const p = profiles[i];
+    b.textContent = (p.name || String(i + 1)) + (p.on ? "" : " ·");
+    b.style.opacity = p.on || i === curIdx ? "1" : ".55";
+  });
+  setSeg("ptabs", curIdx);
+}
 function refreshVisibility() {
   const t = getSeg("type");
   $("flatBox").hidden = t === "room";
@@ -397,21 +514,62 @@ function refreshVisibility() {
   $("pauseBox").classList.toggle("paused", $("paused").checked);
 }
 
-// ---- заполнение
-setSeg("type", cur.type); setMulti("src", cur.src); $("city").value = cur.city || "szczecin";
-zones.querySelectorAll(".dist .chip").forEach(b => pressed(b, (cur.dist || []).includes(b.dataset.v)));
-$("noDist").checked = cur.noDist !== false;
-for (const k of ["pMin","pMax","tMax","aMin","aMax","yearMin"]) $(k).value = cur[k] ?? "";
-setMulti("rooms", cur.rooms || []); setMulti("floors", cur.floors || []); setMulti("bt", cur.bt || []); setMulti("ex", cur.ex || []); setMulti("heat", cur.heat || []);
-setMulti("ppl", cur.ppl || []); $("pref").value = cur.pref || "";
-for (const k of ["furn","pets","priv","paused"]) $(k).checked = !!cur[k];
-$("excl").value = cur.excl || ""; $("incl").value = cur.incl || "";
-setSeg("first", cur.first ?? 3);
-refreshZones(); refreshVisibility();
+// ---- форма <-> профиль
+function loadProfile(p) {
+  $("pname").value = p.name || ""; $("pon").checked = !!p.on;
+  setSeg("type", p.type); setMulti("src", p.src); $("city").value = p.city || "szczecin";
+  zones.querySelectorAll(".dist .chip").forEach(b => pressed(b, (p.dist || []).includes(b.dataset.v)));
+  $("noDist").checked = p.noDist !== false;
+  for (const k of ["pMin","pMax","tMax","aMin","aMax","yearMin"]) $(k).value = p[k] ?? "";
+  setMulti("rooms", p.rooms || []); setMulti("floors", p.floors || []); setMulti("bt", p.bt || []); setMulti("ex", p.ex || []); setMulti("heat", p.heat || []);
+  setMulti("ppl", p.ppl || []); $("pref").value = p.pref || "";
+  for (const k of ["furn","pets","priv"]) $(k).checked = !!p[k];
+  $("excl").value = p.excl || ""; $("incl").value = p.incl || "";
+  setSeg("first", p.first ?? 3);
+  refreshZones(); refreshVisibility();
+}
+function numOrNull(id) { const v = parseInt($(id).value, 10); return Number.isFinite(v) && v > 0 ? v : null; }
+function readProfile() {
+  return {
+    v: 2, name: $("pname").value.trim(), on: $("pon").checked,
+    type: getSeg("type") || "flat", src: getMulti("src"), city: $("city").value,
+    dist: $("city").value === "szczecin" ? [...zones.querySelectorAll('.dist .chip[aria-pressed="true"]')].map(b => b.dataset.v) : [],
+    noDist: $("noDist").checked,
+    pMin: numOrNull("pMin"), pMax: numOrNull("pMax"), tMax: numOrNull("tMax"),
+    rooms: getMulti("rooms").map(Number), aMin: numOrNull("aMin"), aMax: numOrNull("aMax"),
+    floors: getMulti("floors").map(Number), bt: getMulti("bt"), ex: getMulti("ex"), heat: getMulti("heat"),
+    furn: $("furn").checked, pets: $("pets").checked, yearMin: numOrNull("yearMin"),
+    ppl: getMulti("ppl").map(Number), pref: $("pref").value, priv: $("priv").checked,
+    excl: $("excl").value.trim(), incl: $("incl").value.trim(),
+    first: Number(getSeg("first") ?? 3),
+  };
+}
+function loadSettings(s) {
+  $("paused").checked = !!s.paused;
+  const q = s.quiet || {}; $("qOn").checked = !!q.on; $("qFrom").value = q.from ?? 23; $("qTo").value = q.to ?? 7;
+  const me = s.me || {};
+  $("meName").value = me.name || ""; $("meMove").value = me.move || ""; setSeg("mePeople", me.people ? Math.min(me.people, 4) : "");
+  $("meJob").value = me.job || ""; $("mePets").value = me.pets || ""; $("meSmoke").checked = me.smoke === "no"; $("meNote").value = me.note || "";
+}
+function readSettings() {
+  const ppl = getSeg("mePeople");
+  return {paused: $("paused").checked,
+          quiet: {on: $("qOn").checked, from: Number($("qFrom").value), to: Number($("qTo").value)},
+          me: {name: $("meName").value.trim(), move: $("meMove").value.trim(), people: ppl ? Number(ppl) : null,
+               job: $("meJob").value, pets: $("mePets").value, smoke: $("meSmoke").checked ? "no" : "", note: $("meNote").value.trim()}};
+}
+
+loadSettings(settings);
+loadProfile(profiles[0]);
+refreshTabs();
 
 // ---- события
 document.addEventListener("click", e => {
   const b = e.target.closest("button"); if (!b) return;
+  if (b.closest("#ptabs")) {
+    profiles[curIdx] = readProfile(); curIdx = Number(b.dataset.v);
+    loadProfile(profiles[curIdx]); refreshTabs(); haptic(); return;
+  }
   if (b.closest(".seg")) { setSeg(b.closest(".seg").id, b.dataset.v); refreshVisibility(); haptic(); return; }
   if (b.classList.contains("chip")) { pressed(b, b.getAttribute("aria-pressed") !== "true"); refreshZones(); haptic(); return; }
   if (b.dataset.zone) {
@@ -422,41 +580,40 @@ document.addEventListener("click", e => {
 });
 $("city").addEventListener("change", refreshVisibility);
 $("paused").addEventListener("change", refreshVisibility);
+$("pon").addEventListener("change", () => { profiles[curIdx].on = $("pon").checked; refreshTabs(); });
+$("pname").addEventListener("input", () => { profiles[curIdx].name = $("pname").value.trim(); refreshTabs(); });
 function haptic() { try { tg && tg.HapticFeedback && tg.HapticFeedback.selectionChanged(); } catch (e) {} }
 
-function numOrNull(id) { const v = parseInt($(id).value, 10); return Number.isFinite(v) && v > 0 ? v : null; }
-
 function collect() {
-  const f = {
-    v: 1, type: getSeg("type") || "flat", src: getMulti("src"), city: $("city").value,
-    dist: $("city").value === "szczecin" ? [...zones.querySelectorAll('.dist .chip[aria-pressed="true"]')].map(b => b.dataset.v) : [],
-    noDist: $("noDist").checked,
-    pMin: numOrNull("pMin"), pMax: numOrNull("pMax"), tMax: numOrNull("tMax"),
-    rooms: getMulti("rooms").map(Number), aMin: numOrNull("aMin"), aMax: numOrNull("aMax"),
-    floors: getMulti("floors").map(Number), bt: getMulti("bt"), ex: getMulti("ex"), heat: getMulti("heat"),
-    furn: $("furn").checked, pets: $("pets").checked, yearMin: numOrNull("yearMin"),
-    ppl: getMulti("ppl").map(Number), pref: $("pref").value, priv: $("priv").checked,
-    excl: $("excl").value.trim(), incl: $("incl").value.trim(),
-    first: Number(getSeg("first") ?? 3), paused: $("paused").checked,
-  };
+  profiles[curIdx] = readProfile();
   const err = [];
-  if (!f.src.length) err.push(L.err_src);
-  if (f.pMin && f.pMax && f.pMin > f.pMax) err.push(L.err_price);
-  if (f.aMin && f.aMax && f.aMin > f.aMax) err.push(L.err_area);
-  return {f, err};
+  const many = profiles.filter(x => x.on).length > 1;
+  profiles.forEach((p, i) => {
+    if (!p.on) return;
+    const n = many ? " (" + (p.name || i + 1) + ")" : "";
+    if (!p.src.length) err.push(L.err_src + n);
+    if (p.pMin && p.pMax && p.pMin > p.pMax) err.push(L.err_price + n);
+    if (p.aMin && p.aMax && p.aMin > p.aMax) err.push(L.err_area + n);
+  });
+  const out = profiles.map(p => {
+    const q = {...p, dist: (p.dist || []).map(d => ALL.indexOf(d)).filter(i => i >= 0)};
+    return q.on ? q : {on: false, name: q.name};
+  });
+  while (out.length > 1 && !out[out.length - 1].on && !out[out.length - 1].name) out.pop();
+  return {data: {v: 3, s: readSettings(), p: out}, err};
 }
 
 function save() {
-  const {f, err} = collect();
+  const {data, err} = collect();
   $("err").textContent = err.join(" ");
   if (err.length) { try { tg && tg.HapticFeedback.notificationOccurred("error"); } catch (e) {} return; }
-  const data = JSON.stringify(f);
+  const json = JSON.stringify(data);
   if (tg && tg.sendData && tg.initData !== undefined && tg.platform !== "unknown") {
     try { tg.HapticFeedback.notificationOccurred("success"); } catch (e) {}
-    tg.sendData(data);              // Telegram закроет окно и передаст фильтры боту
+    tg.sendData(json);              // Telegram закроет окно и передаст фильтры боту
   } else {
     $("err").textContent = L.open_in_tg;
-    console.log(data);
+    console.log(json);
   }
 }
 $("save").addEventListener("click", save);
