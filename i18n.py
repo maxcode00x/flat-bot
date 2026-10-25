@@ -199,3 +199,14 @@ SCAM_T = {
     "cheap": {"ru": "цена намного ниже рынка", "pl": "cena dużo poniżej rynku", "en": "price far below the market",
               "uk": "ціна набагато нижча за ринок"},
 }
+
+T.update({
+    "all_tail": {"ru": "Сейчас пришлю все подходящие объявления, дальше — только новые.",
+                 "pl": "Zaraz wyślę wszystkie pasujące ogłoszenia, potem — tylko nowe.",
+                 "en": "I'll send all matching listings now, then only new ones.",
+                 "uk": "Зараз надішлю всі відповідні оголошення, далі — лише нові."},
+    "all_intro": {"ru": "📦 Подходящих объявлений: {n}. Присылаю все — это займёт около {m} мин.",
+                  "pl": "📦 Pasujących ogłoszeń: {n}. Wysyłam wszystkie — potrwa to około {m} min.",
+                  "en": "📦 Matching listings: {n}. Sending all of them — this will take about {m} min.",
+                  "uk": "📦 Відповідних оголошень: {n}. Надсилаю всі — це займе близько {m} хв."},
+})

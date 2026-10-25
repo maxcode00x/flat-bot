@@ -116,6 +116,9 @@ PEOPLE_OTODOM = {1: "ONE", 2: "TWO", 3: "THREE"}
 PEOPLE_OLX = {1: "one", 2: "two", 3: "three"}
 
 ALL_SOURCES = ["olx", "otodom", "domiporta", "nol"]
+ALL = 999            # «прислать все текущие объявления» вместо N самых свежих
+ALL_CAP = 250        # но не больше стольких за раз
+MAX_PAGES = 15       # сколько страниц листать на каждом сайте в режиме «Все»
 SOURCE_NAMES = {"olx": "OLX", "otodom": "Otodom", "domiporta": "Domiporta", "nol": "Nieruchomosci-online"}
 
 DEFAULT_FILTERS = {
@@ -240,12 +243,12 @@ OLX_CITY_IDS = {"szczecin": 16705, "warszawa": 17871, "krakow": 8959, "wroclaw":
                 "bydgoszcz": 4019, "bialystok": 1079}
 
 
-def olx_url(f: dict, kind: str) -> str:
+def olx_url(f: dict, kind: str, page: int = 1) -> str:
     """Запрос к API OLX (тот же, которым пользуется сам сайт; HTML-страницы OLX блокирует для серверов)."""
     city = norm(f.get("city") or "szczecin")
     if city not in OLX_CITY_IDS:
         raise RuntimeError(f"OLX: город «{f.get('city')}» не поддерживается")
-    q: list[tuple[str, str]] = [("offset", "0"), ("limit", "50"), ("category_id", "15" if kind == "flat" else "11"),
+    q: list[tuple[str, str]] = [("offset", str((page - 1) * 50)), ("limit", "50"), ("category_id", "15" if kind == "flat" else "11"),
                                 ("city_id", str(OLX_CITY_IDS[city])), ("sort_by", "created_at:desc")]
     if f.get("pMin"):
         q.append(("filter_float_price:from", str(f["pMin"])))
@@ -362,7 +365,7 @@ def parse_olx(page: str) -> list[Ad]:
 
 # ---------------------------------------------------------------- Otodom
 
-def otodom_url(f: dict, kind: str) -> str:
+def otodom_url(f: dict, kind: str, page: int = 1) -> str:
     city = norm(f.get("city") or "szczecin")
     loc = OTODOM_CITIES.get(city)
     if not loc:
@@ -399,6 +402,8 @@ def otodom_url(f: dict, kind: str) -> str:
         ppl = [PEOPLE_OTODOM[int(p)] for p in sorted(f.get("ppl") or [])]
         if ppl:
             q.append(("peoplePerRoom", "[" + ",".join(ppl) + "]"))
+    if page > 1:
+        q.append(("page", str(page)))
     return f"https://www.otodom.pl/pl/wyniki/wynajem/{estate}/{loc}?" + urlencode(q)
 
 
@@ -455,13 +460,15 @@ VOIVODESHIPS = {"szczecin": "zachodniopomorskie", "warszawa": "mazowieckie", "kr
 ZONES = {norm(z): z for z in SZCZECIN}
 
 
-def domiporta_url(f: dict, kind: str) -> str | None:
+def domiporta_url(f: dict, kind: str, page: int = 1) -> str | None:
     if kind != "flat":
         return None                                   # комнат на Domiporta нет
     city = norm(f.get("city") or "szczecin")
     if city not in VOIVODESHIPS:
         raise RuntimeError(f"Domiporta: город «{f.get('city')}» не поддерживается")
-    q: list[tuple[str, str]] = [("SortingOrderDirection", "InsertionDateDescending"), ("RowsPerPage", "72")]
+    q: list[tuple[str, str]] = [("SortingOrderDirection", "InsertionDateDescending"), ("RowsPerPage", "60")]
+    if page > 1:
+        q.append(("PageNumber", str(page)))
     for key, name in (("pMin", "Price.From"), ("pMax", "Price.To"), ("aMin", "Surface.From"), ("aMax", "Surface.To")):
         if f.get(key):
             q.append((name, str(f[key])))
@@ -536,7 +543,7 @@ def parse_domiporta(page: str) -> list[Ad]:
 
 # ---------------------------------------------------------------- Nieruchomosci-online
 
-def nol_url(f: dict, kind: str) -> str:
+def nol_url(f: dict, kind: str, page: int = 1) -> str:
     city = CITY_NAMES.get(norm(f.get("city") or "szczecin"))
     if not city:
         raise RuntimeError(f"Nieruchomosci-online: город «{f.get('city')}» не поддерживается")
@@ -547,7 +554,8 @@ def nol_url(f: dict, kind: str) -> str:
         fields[9] = f"{f.get('aMin') or ''}-{f.get('aMax') or ''}"
     while fields and fields[-1] == "":
         fields.pop()
-    return "https://www.nieruchomosci-online.pl/szukaj.html?" + quote(",".join(fields), safe=",-")
+    return "https://www.nieruchomosci-online.pl/szukaj.html?" + quote(",".join(fields), safe=",-") + \
+        (f"&p={page}" if page > 1 else "")
 
 
 def parse_nol(page: str) -> list[Ad]:
@@ -782,7 +790,8 @@ def clean_filters(raw: dict) -> dict:
     f["ex"] = [x for x in f.get("ex") or [] if x in EXTRAS_TEXT]
     f["heat"] = [x for x in f.get("heat") or [] if x in HEATING]
     f["pref"] = f["pref"] if f.get("pref") in PREFS else ""
-    f["first"] = max(0, min(int(num(f.get("first")) or 0), 10))
+    first = num(f.get("first")) or 0
+    f["first"] = ALL if first >= ALL else max(0, min(int(first), 10))
     f["excl"] = str(f.get("excl") or "")[:500]
     f["incl"] = str(f.get("incl") or "")[:500]
     f["dist"] = [ALL_OSIEDLA[d] if isinstance(d, int) and 0 <= d < len(ALL_OSIEDLA) else str(d)
@@ -1235,7 +1244,12 @@ def handle_updates(tg: Telegram, st: dict, wait: int = 0) -> None:
             else:
                 head = t("saved", lang)
                 firsts = [f["first"] for i, f in enumerate(profs) if pbase[i] and f.get("on", True)]
-                tail = t("first_tail", lang, n=max(firsts)) if changed and firsts and max(firsts) else t("only_new", lang)
+                if changed and firsts and max(firsts) == ALL:
+                    tail = t("all_tail", lang)
+                elif changed and firsts and max(firsts):
+                    tail = t("first_tail", lang, n=max(firsts))
+                else:
+                    tail = t("only_new", lang)
             tg.text(cid, f"{head}\n\n{all_summary(user, lang)}\n\n{tail}", markup=keyboard(user, lang))
         elif text.startswith("/start") or text.startswith("/lang") or text in LANG_BUTTONS or not user.get("lang"):
             tg.text(cid, LANG_PROMPT, markup=LANG_MENU)
@@ -1290,6 +1304,30 @@ def remember(user: dict, ad: Ad, kind: str, city: str, msg_id: int | None, fp: s
                             "city": city, "d": datetime.now(timezone.utc).isoformat()[:10]}
 
 
+def fetch_all(pages: "Pages", src: str, f: dict, kind: str) -> list[Ad]:
+    """Листает страницы поиска, пока появляются новые объявления (не больше MAX_PAGES)."""
+    out: dict[str, Ad] = {}
+    for page in range(1, MAX_PAGES + 1):
+        url = SOURCES[src][0](f, kind, page)
+        if url is None:
+            break
+        try:
+            ads = pages.get(src, url)
+        except Exception:  # noqa: BLE001
+            if page == 1:
+                raise
+            break
+        new = [a for a in ads if a.key not in out]
+        for a in new:
+            out[a.key] = a
+        if len(new) < 10:                          # страницы кончились (сайт повторяет последнюю или пустая)
+            break
+    return list(out.values())
+
+
+DEADLINE: list[float] = [0.0]   # после этого времени круг заканчивается — длинную рассылку продолжим в следующем
+
+
 def search_user(tg: Telegram, st: dict, cid: str, user: dict, pages: Pages, admins: list[str],
                 now_local: datetime | None = None) -> int:
     settings = user["settings"]
@@ -1303,6 +1341,7 @@ def search_user(tg: Telegram, st: dict, cid: str, user: dict, pages: Pages, admi
     fresh: dict[str, tuple] = {}                  # ключ -> (объявление, flat/room, профиль, город)
     drops: dict[str, tuple] = {}
     first_send: list[tuple] = []
+    all_mode: list[int] = []                      # профили в режиме «прислать все»
     for i, f in enumerate(profs):
         if not f.get("on", True):
             continue
@@ -1321,7 +1360,7 @@ def search_user(tg: Telegram, st: dict, cid: str, user: dict, pages: Pages, admi
                         url = SOURCES[src][0]({"city": f.get("city")}, kind)  # общая лента новых, фильтруем сами
                     if url is None:
                         continue                                          # на этом сайте нет такого типа жилья
-                    ads = pages.get(src, url)
+                    ads = fetch_all(pages, src, f, kind) if baseline and f["first"] == ALL else pages.get(src, url)
                     st["errors"].pop(sid, None)
                     ok_any = True
                 except Exception as e:  # noqa: BLE001
@@ -1349,11 +1388,21 @@ def search_user(tg: Telegram, st: dict, cid: str, user: dict, pages: Pages, admi
         if baseline and ok_any:
             items = sorted(matched.values(), key=lambda x: x[0].created)
             for x in items:
-                user["seen"][x[0].key] = now
                 fresh.pop(x[0].key, None)
-            if f["first"]:
-                first_send += items[-f["first"]:]
-            user["pbase"][i] = False
+            if f["first"] == ALL:
+                todo = [x for x in items if x[0].key not in user["sent"]][-ALL_CAP:]
+                todo_keys = {x[0].key for x in todo}
+                for x in items:
+                    if x[0].key not in todo_keys:
+                        user["seen"][x[0].key] = now
+                first_send += todo
+                all_mode.append(i)
+            else:
+                for x in items:
+                    user["seen"][x[0].key] = now
+                if f["first"]:
+                    first_send += items[-f["first"]:]
+                user["pbase"][i] = False
 
     quiet = is_quiet(settings, now_local)
     queue = sorted(fresh.values(), key=lambda x: x[0].created)
@@ -1366,10 +1415,19 @@ def search_user(tg: Telegram, st: dict, cid: str, user: dict, pages: Pages, admi
     if not quiet:
         user["held"] = 0
 
+    if all_mode and first_send and not user.get("all_note"):
+        n = len(first_send)
+        tg.text(cid, t("all_intro", lang, n=n, m=max(1, round(n * 1.2 / 60))))
+        user["all_note"] = True
+
     # индекс отпечатков уже присланного — для склейки дублей с разных сайтов
     fps = {v["fp"]: (k, v) for k, v in user["sent"].items() if v.get("fp")}
     sent = 0
+    interrupted = False
     for item in first_send + queue[:cap]:
+        if DEADLINE[0] and time.time() > DEADLINE[0]:
+            interrupted = True                    # круг заканчивается — остальное пришлю в следующем
+            break
         a, kind, pname, city = item
         if a.key in user["seen"] and item not in first_send:
             continue
@@ -1398,6 +1456,11 @@ def search_user(tg: Telegram, st: dict, cid: str, user: dict, pages: Pages, admi
         if fp:
             fps[fp] = (a.key, user["sent"][a.key])
         sent += 1
+    if not interrupted:
+        for i in all_mode:
+            user["pbase"][i] = False
+        if all_mode:
+            user.pop("all_note", None)
     for a, kind, pname, city, old_price in list(drops.values())[:10]:
         head = t("drop", lang, old=fmt_money(old_price), new=fmt_money(a.price))
         ev = price_eval(stats, kind, city, a.key, a.price, a.area, a.places, a.zone)
@@ -1450,6 +1513,7 @@ def main() -> int:
     listen = int(os.environ.get("RUN_SECONDS", "0"))      # сколько секунд слушать сообщения после поиска
     every = int(os.environ.get("SEARCH_EVERY", "600"))
     started = time.time()
+    DEADLINE[0] = started + listen + 150 if listen else 0.0
 
     handle_updates(tg, st)
     search_round(tg, st, admins)
