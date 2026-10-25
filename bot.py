@@ -25,7 +25,8 @@ from urllib.parse import quote, urlencode
 import requests
 from bs4 import BeautifulSoup
 
-from i18n import (BUILDING_T, EXTRAS_T, HEATING_T, LANG_NAMES, LANG_PROMPT, LANGS, PREF_T, T,
+from features import fingerprint, owner_message, price_eval, scam_flags, stats_add
+from i18n import (BUILDING_T, EXTRAS_T, HEATING_T, LANG_NAMES, LANG_PROMPT, LANGS, PREF_T, SCAM_T, T,
                   lang_of, t, tr)
 
 ROOT = Path(__file__).resolve().parent
@@ -784,9 +785,12 @@ def clean_filters(raw: dict) -> dict:
     f["first"] = max(0, min(int(num(f.get("first")) or 0), 10))
     f["excl"] = str(f.get("excl") or "")[:500]
     f["incl"] = str(f.get("incl") or "")[:500]
-    f["dist"] = [str(d) for d in f.get("dist") or []][:60]
+    f["dist"] = [ALL_OSIEDLA[d] if isinstance(d, int) and 0 <= d < len(ALL_OSIEDLA) else str(d)
+                 for d in f.get("dist") or []][:60]
     for k in ("noDist", "furn", "pets", "priv", "paused"):
         f[k] = bool(f.get(k))
+    f["name"] = str(raw.get("name") or "").strip()[:30]
+    f["on"] = bool(raw.get("on", True))
     return f
 
 
@@ -818,21 +822,25 @@ class Telegram:
             return {"ok": False, "error_code": r.status_code}
         return {"ok": False, "error_code": 0}
 
-    def text(self, cid: str, msg: str, markup: dict | None = None) -> dict:
-        p = {"chat_id": cid, "text": msg, "parse_mode": "HTML", "disable_web_page_preview": True}
+    def text(self, cid: str, msg: str, markup: dict | None = None, reply_to: int | None = None,
+             preview: bool = False) -> dict:
+        p = {"chat_id": cid, "text": msg, "parse_mode": "HTML", "disable_web_page_preview": not preview}
         if markup:
             p["reply_markup"] = markup
+        if reply_to:
+            p["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
         res = self.call("sendMessage", p)
         time.sleep(0.4)
         return res
 
-    def ad(self, cid: str, ad: Ad, kind: str, lang: str = "ru") -> dict:
-        cap = render(ad, kind, lang)
+    def post(self, cid: str, caption: str, photo: str | None, markup: dict | None) -> dict:
         res = {"ok": False}
-        if ad.photo:
-            res = self.call("sendPhoto", {"chat_id": cid, "photo": ad.photo, "caption": cap, "parse_mode": "HTML"})
+        if photo:
+            res = self.call("sendPhoto", {"chat_id": cid, "photo": photo, "caption": caption, "parse_mode": "HTML",
+                                          "reply_markup": markup})
         if not res.get("ok") and res.get("error_code") != 403:
-            res = self.call("sendMessage", {"chat_id": cid, "text": cap, "parse_mode": "HTML"})
+            res = self.call("sendMessage", {"chat_id": cid, "text": caption, "parse_mode": "HTML",
+                                            "reply_markup": markup})
         time.sleep(1.05)
         return res
 
@@ -849,30 +857,87 @@ def extra_text(code: tuple, lang: str) -> str:
     return t(k, lang)
 
 
-def render(ad: Ad, kind: str, lang: str = "ru") -> str:
+def ev_line(ev: dict | None, lang: str) -> str | None:
+    if not ev:
+        return None
+    m = f"{ev['median']:.0f} zł/m²" if ev["kind"] == "flat" else fmt_money(ev["median"])
+    d = ev["diff"]
+    if abs(d) < 5:
+        return t("ev_avg", lang, w=ev["where"], m=m)
+    return t("ev_below" if d < 0 else "ev_above", lang, d=abs(d), w=ev["where"], m=m)
+
+
+def render(ad: Ad, kind: str, lang: str = "ru", ev: dict | None = None, flags: list | None = None,
+           profile: str = "", head: str = "") -> str:
     e = html.escape
-    head = f"🏠 <b>{fmt_money(ad.price)}</b>"
+    lines = [head] if head else []
+    price = f"🏠 <b>{fmt_money(ad.price)}</b>"
     if ad.czynsz:
-        head += f" + czynsz {fmt_money(ad.czynsz)} = <b>{fmt_money(ad.total)}</b>"
+        price += f" + czynsz {fmt_money(ad.czynsz)} = <b>{fmt_money(ad.total)}</b>"
+    lines.append(price)
     specs = []
     if ad.rooms:
         specs.append("4+ pok." if ad.rooms >= 4 else f"{ad.rooms} pok.")
     if ad.area:
         specs.append(f"{ad.area:g} m²")
     specs += [extra_text(tuple(x), lang) for x in ad.extra]
-    lines = [head]
     if specs:
         lines.append(" · ".join(e(x) for x in specs))
     if ad.location:
         lines.append(f"📍 {e(ad.location)}")
+    line = ev_line(ev, lang)
+    if line:
+        lines.append(e(line))
+    if flags:
+        lines.append(t("scam_head", lang) + " " + e(", ".join(tr(SCAM_T, f, lang) for f in flags)))
     lines.append(f'<a href="{e(ad.url, quote=True)}">{e(ad.title[:200])}</a>')
     who = {True: t("private", lang), False: t("agency", lang)}.get(ad.private, "")
     label = t("kind_flat" if kind == "flat" else "kind_room", lang)
-    lines.append("<i>" + " · ".join(x for x in [ad.source, who, label] if x) + "</i>")
+    tail = [ad.source, who, label] + ([f"🔎 {profile}"] if profile else [])
+    lines.append("<i>" + e(" · ".join(x for x in tail if x)) + "</i>")
     return "\n".join(lines)[:1020]
 
 
-def webapp_url(f: dict, lang: str = "ru") -> str | None:
+def map_url(location: str, city: str = "") -> str | None:
+    if not location:
+        return None
+    q = location if (not city or norm(city) in norm(location)) else f"{location}, {city}"
+    return "https://www.google.com/maps/search/?api=1&query=" + quote(q)
+
+
+def ad_markup(key: str, url: str, location: str, lang: str, faved: bool = False, city: str = "") -> dict:
+    row2 = []
+    m = map_url(location, city)
+    if m:
+        row2.append({"text": t("b_map", lang), "url": m})
+    if url:
+        row2.append({"text": t("b_open", lang), "url": url})
+    rows = [[{"text": t("b_unfav" if faved else "b_fav", lang), "callback_data": f"f:{key}"[:64]},
+             {"text": t("b_hide", lang), "callback_data": f"h:{key}"[:64]},
+             {"text": t("b_write", lang), "callback_data": f"m:{key}"[:64]}]]
+    if row2:
+        rows.append(row2)
+    return {"inline_keyboard": rows}
+
+
+def short_profile(f: dict) -> dict:
+    """Профиль для ссылки на страницу фильтров: только отличия от умолчаний, районы — номерами."""
+    out = {}
+    for k, v in f.items():
+        if k in DEFAULT_FILTERS and DEFAULT_FILTERS[k] == v:
+            continue
+        if k == "on" and v is True:
+            continue
+        if k in ("v",) or v in (None, "", []):
+            if k != "excl":
+                continue
+        out[k] = v
+    if out.get("dist"):
+        out["dist"] = [ALL_OSIEDLA.index(d) for d in out["dist"] if d in ALL_OSIEDLA]
+    return out
+
+
+def webapp_url(user: dict, lang: str = "ru") -> str | None:
     base = os.environ.get("WEBAPP_URL")
     if not base:
         repo = os.environ.get("GITHUB_REPOSITORY", "")
@@ -880,17 +945,15 @@ def webapp_url(f: dict, lang: str = "ru") -> str | None:
             return None
         owner, name = repo.split("/", 1)
         base = f"https://{owner.lower()}.github.io/{name}/"
-    # в ссылку кладём только непустые поля, районы — номерами (так ссылка короче)
-    short = {k: v for k, v in f.items() if v not in (None, "", [], False) or k in ("noDist",)}
-    if short.get("dist"):
-        short["dist"] = [ALL_OSIEDLA.index(d) for d in short["dist"] if d in ALL_OSIEDLA]
-    data = base64.urlsafe_b64encode(json.dumps(short, ensure_ascii=False, separators=(",", ":")).encode()).decode().rstrip("=")
-    return f"{base}?l={lang}&f={data}"
+    payload = {"s": user.get("settings") or DEFAULT_SETTINGS,
+               "p": [short_profile(f) for f in (user.get("profiles") or [])]}
+    data = base64.urlsafe_b64encode(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()).decode()
+    return f"{base}?l={lang}&f={data.rstrip('=')}"
 
 
-def keyboard(f: dict, lang: str = "ru") -> dict | None:
-    url = webapp_url(f, lang)
-    rows = [[{"text": t("btn_lang", lang)}]]
+def keyboard(user: dict, lang: str = "ru") -> dict:
+    url = webapp_url(user, lang)
+    rows = [[{"text": t("btn_fav_list", lang)}, {"text": t("btn_lang", lang)}]]
     if url:
         rows.insert(0, [{"text": t("btn_filters", lang), "web_app": {"url": url}}])
     return {"keyboard": rows, "resize_keyboard": True, "is_persistent": True}
@@ -901,9 +964,31 @@ LANG_MENU = {"inline_keyboard": [[{"text": LANG_NAMES["ru"], "callback_data": "l
                                  [{"text": LANG_NAMES["en"], "callback_data": "lang:en"},
                                   {"text": LANG_NAMES["uk"], "callback_data": "lang:uk"}]]}
 LANG_BUTTONS = {T["btn_lang"][x] for x in LANGS}
+FAV_BUTTONS = {T["btn_fav_list"][x] for x in LANGS}
 
 
 # ---------------------------------------------------------------- состояние
+
+DEFAULT_SETTINGS = {"paused": False, "quiet": {"on": False, "from": 23, "to": 7}, "me": {}}
+MAX_PROFILES = 3
+SENT_KEEP = 400
+
+
+def clean_settings(raw: dict | None) -> dict:
+    raw = raw or {}
+    q = raw.get("quiet") or {}
+    hour = lambda v, d: int(v) if str(v).isdigit() and 0 <= int(v) <= 23 else d  # noqa: E731
+    me = raw.get("me") or {}
+    people = int(me["people"]) if str(me.get("people", "")).isdigit() and 1 <= int(me["people"]) <= 6 else None
+    return {
+        "paused": bool(raw.get("paused")),
+        "quiet": {"on": bool(q.get("on")), "from": hour(q.get("from"), 23), "to": hour(q.get("to"), 7)},
+        "me": {"name": str(me.get("name") or "").strip()[:40], "move": str(me.get("move") or "").strip()[:40],
+               "people": people, "job": me.get("job") if me.get("job") in ("work", "study", "both") else "",
+               "pets": me.get("pets") if me.get("pets") in ("no", "cat", "dog", "small") else "",
+               "smoke": "no" if me.get("smoke") == "no" else "", "note": str(me.get("note") or "").strip()[:200]},
+    }
+
 
 def _cipher():
     """Шифр для seen.json: репозиторий публичный, а там фильтры людей. Ключ — из токена бота."""
@@ -920,8 +1005,26 @@ _SAVED: dict = {}
 
 
 def new_user() -> dict:
-    return {"filters": None, "baseline": True, "seen": {}, "blocked": False,
-            "joined": datetime.now(timezone.utc).isoformat()[:10]}
+    return {"profiles": [], "pbase": [], "settings": clean_settings({}), "seen": {}, "sent": {}, "fav": {},
+            "hidden": {}, "held": 0, "blocked": False, "joined": datetime.now(timezone.utc).isoformat()[:10]}
+
+
+def upgrade_user(u: dict) -> None:
+    """Переезд со старых версий: один набор фильтров -> профили + настройки."""
+    for k, v in new_user().items():
+        u.setdefault(k, v if not isinstance(v, (dict, list)) else type(v)(v))
+    f = u.pop("filters", None)
+    if f is not None and not u["profiles"]:
+        if int(f.get("v") or 1) < 2:                      # v2: добавились Domiporta и Nieruchomosci-online
+            f["src"] = list(dict.fromkeys(list(f.get("src") or []) + ["domiporta", "nol"]))
+            u["baseline"] = True
+        u["settings"]["paused"] = bool(f.get("paused"))
+        f = clean_filters(f)
+        u["profiles"] = [f]
+        u["pbase"] = [bool(u.get("baseline", False))]
+    u.pop("baseline", None)
+    while len(u["pbase"]) < len(u["profiles"]):
+        u["pbase"].append(True)
 
 
 def load_state(admins: list[str]) -> dict:
@@ -947,12 +1050,9 @@ def load_state(admins: list[str]) -> dict:
             st["users"][a] = u
     st.setdefault("offset", 0)
     st.setdefault("errors", {})
-    for u in st["users"].values():                        # v2: добавились Domiporta и Nieruchomosci-online
-        f = u.get("filters")
-        if f and int(f.get("v") or 1) < 2:
-            f["src"] = list(dict.fromkeys(list(f.get("src") or []) + ["domiporta", "nol"]))
-            f["v"] = 2
-            u["baseline"] = True                          # старые объявления с новых сайтов не шлём
+    st.setdefault("stats", {})
+    for u in st["users"].values():
+        upgrade_user(u)
     return st
 
 
@@ -960,6 +1060,9 @@ def save_state(st: dict, keep_days: int = 60):
     cutoff = (datetime.now(timezone.utc) - timedelta(days=keep_days)).isoformat()
     for u in st["users"].values():
         u["seen"] = {k: v for k, v in u["seen"].items() if v >= cutoff}
+        u["hidden"] = {k: v for k, v in u["hidden"].items() if v >= cutoff}
+        while len(u["sent"]) > SENT_KEEP:
+            u["sent"].pop(next(iter(u["sent"])))
     data = json.dumps(st, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     if data == _SAVED.get("plain") and STATE_PATH.exists():
         return                                   # ничего не изменилось — не трогаем файл (меньше коммитов)
@@ -970,33 +1073,122 @@ def save_state(st: dict, keep_days: int = 60):
 
 # ---------------------------------------------------------------- сообщения боту
 
-
 MAX_USERS = int(os.environ.get("MAX_USERS", "300"))
+
+
+def profile_label(f: dict, i: int, lang: str) -> str:
+    return f.get("name") or f"{t('profile', lang)} {i + 1}"
+
+
+def all_summary(user: dict, lang: str) -> str:
+    profs = user.get("profiles") or []
+    s = user.get("settings") or DEFAULT_SETTINGS
+    on = [(i, f) for i, f in enumerate(profs) if f.get("on", True)]
+    parts = []
+    for i, f in on:
+        head = f"<b>{html.escape(profile_label(f, i, lang))}</b>\n" if len(on) > 1 else ""
+        parts.append(head + summary(f, lang))
+    if s.get("quiet", {}).get("on"):
+        parts.append(t("quiet_on", lang, a=s["quiet"]["from"], b=s["quiet"]["to"]))
+    return "\n\n".join(parts)
 
 
 def send_welcome(tg: Telegram, cid: str, user: dict) -> None:
     lang = lang_of(user)
-    tg.text(cid, t("welcome", lang), markup=keyboard(user.get("filters") or DEFAULT_FILTERS, lang))
+    tg.text(cid, t("welcome", lang), markup=keyboard(user, lang))
+
+
+def send_filters(tg: Telegram, cid: str, user: dict) -> None:
+    lang = lang_of(user)
+    paused = t("paused", lang) + "\n\n" if user["settings"].get("paused") else ""
+    tg.text(cid, f"{paused}{t('your_filters', lang)}\n\n{all_summary(user, lang)}\n\n"
+                 f"{t('change_hint', lang, btn=t('btn_filters', lang))}", markup=keyboard(user, lang))
+
+
+def send_favorites(tg: Telegram, cid: str, user: dict) -> None:
+    lang = lang_of(user)
+    favs = list(user["fav"].items())[::-1][:30]
+    if not favs:
+        tg.text(cid, t("fav_empty", lang), markup=keyboard(user, lang))
+        return
+    e = html.escape
+    lines = [t("fav_title", lang, n=len(user["fav"]))]
+    for _, a in favs:
+        bits = [fmt_money(a.get("p"))] + ([f"{a['a']:g} m²"] if a.get("a") else []) + ([a["l"]] if a.get("l") else [])
+        lines.append(f"• {e(' · '.join(bits))} — <a href=\"{e(a.get('u') or '', quote=True)}\">{e((a.get('t') or '')[:60])}</a>")
+    lines.append("\n" + t("fav_hint", lang))
+    tg.text(cid, "\n".join(lines), markup=keyboard(user, lang))
+
+
+def send_owner_message(tg: Telegram, cid: str, user: dict, entry: dict) -> None:
+    lang = lang_of(user)
+    me = user["settings"].get("me") or {}
+    full, short = owner_message(entry, me, entry.get("k", "flat"))
+    e = html.escape
+    msg = (f"{t('msg_intro', lang)}\n\n<code>{e(full)}</code>\n\n{t('msg_short', lang)}\n<code>{e(short)}</code>\n\n"
+           f"🔗 <a href=\"{e(entry.get('u') or '', quote=True)}\">{e((entry.get('t') or '')[:80])}</a>")
+    if not (me.get("name") or me.get("people") or me.get("move")):
+        msg += "\n\n" + t("msg_fill", lang)
+    tg.text(cid, msg)
 
 
 def handle_callback(tg: Telegram, st: dict, cq: dict) -> None:
     msg = cq.get("message") or {}
     cid = str((msg.get("chat") or {}).get("id") or (cq.get("from") or {}).get("id"))
     data = cq.get("data") or ""
-    tg.call("answerCallbackQuery", {"callback_query_id": cq.get("id")})
     user = st["users"].get(cid)
-    if user is None or not data.startswith("lang:") or data[5:] not in LANGS:
+    if user is None:
+        tg.call("answerCallbackQuery", {"callback_query_id": cq.get("id")})
         return
-    user["lang"] = data[5:]
-    lang = user["lang"]
-    if msg.get("message_id"):
-        tg.call("editMessageText", {"chat_id": cid, "message_id": msg["message_id"], "text": t("lang_set", lang)})
-    if user.get("filters"):
-        f = user["filters"]
-        tg.text(cid, f"{t('your_filters', lang)}\n\n{summary(f, lang)}\n\n"
-                     f"{t('change_hint', lang, btn=t('btn_filters', lang))}", markup=keyboard(f, lang))
+    lang = lang_of(user)
+    if data.startswith("lang:") and data[5:] in LANGS:
+        tg.call("answerCallbackQuery", {"callback_query_id": cq.get("id")})
+        user["lang"] = data[5:]
+        lang = user["lang"]
+        if msg.get("message_id"):
+            tg.call("editMessageText", {"chat_id": cid, "message_id": msg["message_id"], "text": t("lang_set", lang)})
+        if user.get("profiles"):
+            send_filters(tg, cid, user)
+        else:
+            send_welcome(tg, cid, user)
+        return
+    op, _, key = data.partition(":")
+    entry = user["sent"].get(key) or user["fav"].get(key)
+    if not entry:
+        tg.call("answerCallbackQuery", {"callback_query_id": cq.get("id"), "text": t("gone", lang)})
+        return
+    if op == "f":
+        if key in user["fav"]:
+            user["fav"].pop(key)
+            note, faved = t("unfaved", lang), False
+        else:
+            user["fav"][key] = dict(entry)
+            note, faved = t("faved", lang), True
+        tg.call("answerCallbackQuery", {"callback_query_id": cq.get("id"), "text": note})
+        if msg.get("message_id"):
+            tg.call("editMessageReplyMarkup", {"chat_id": cid, "message_id": msg["message_id"],
+                                               "reply_markup": ad_markup(key, entry.get("u"), entry.get("l"), lang,
+                                                                         faved, entry.get("city", ""))})
+    elif op == "h":
+        user["hidden"][key] = datetime.now(timezone.utc).isoformat()
+        user["fav"].pop(key, None)
+        tg.call("answerCallbackQuery", {"callback_query_id": cq.get("id"), "text": t("hidden", lang)})
+        if msg.get("message_id"):
+            tg.call("deleteMessage", {"chat_id": cid, "message_id": msg["message_id"]})
+    elif op == "m":
+        tg.call("answerCallbackQuery", {"callback_query_id": cq.get("id")})
+        send_owner_message(tg, cid, user, entry)
     else:
-        send_welcome(tg, cid, user)
+        tg.call("answerCallbackQuery", {"callback_query_id": cq.get("id")})
+
+
+def parse_webapp(data: str) -> tuple[dict, list[dict]]:
+    raw = json.loads(data or "{}")
+    if isinstance(raw, dict) and "p" in raw:                  # v3: настройки + профили
+        profs = [clean_filters(p) for p in (raw.get("p") or []) if isinstance(p, dict)][:MAX_PROFILES]
+        return clean_settings(raw.get("s")), profs
+    f = clean_filters(raw)                                    # старая страница: один набор фильтров
+    return clean_settings({"paused": raw.get("paused")}), [f]
 
 
 def handle_updates(tg: Telegram, st: dict, wait: int = 0) -> None:
@@ -1025,30 +1217,34 @@ def handle_updates(tg: Telegram, st: dict, wait: int = 0) -> None:
         wad = msg.get("web_app_data")
         if wad:
             try:
-                f = clean_filters(json.loads(wad.get("data") or "{}"))
-            except (json.JSONDecodeError, TypeError, ValueError) as ex:
+                settings, profs = parse_webapp(wad.get("data"))
+            except (json.JSONDecodeError, TypeError, ValueError, AttributeError) as ex:
                 tg.text(cid, t("read_error", lang, e=html.escape(str(ex))))
                 continue
-            old = user.get("filters") or {}
-            only_pause = {k: v for k, v in old.items() if k != "paused"} == {k: v for k, v in f.items() if k != "paused"}
-            user["filters"] = f
-            if not only_pause:
-                user["baseline"] = True
-            if f["paused"]:
+            old = user.get("profiles") or []
+            changed = False
+            pbase = []
+            for i, f in enumerate(profs):
+                same = i < len(old) and {k: v for k, v in old[i].items() if k != "name"} == \
+                    {k: v for k, v in f.items() if k != "name"}
+                pbase.append((user["pbase"][i] if i < len(user["pbase"]) else True) if same else True)
+                changed |= not same
+            user["profiles"], user["pbase"], user["settings"] = profs, pbase, settings
+            if settings["paused"]:
                 head, tail = t("paused", lang), t("paused_tail", lang)
             else:
                 head = t("saved", lang)
-                tail = t("first_tail", lang, n=f["first"]) if not only_pause and f["first"] else t("only_new", lang)
-            tg.text(cid, f"{head}\n\n{summary(f, lang)}\n\n{tail}", markup=keyboard(f, lang))
+                firsts = [f["first"] for i, f in enumerate(profs) if pbase[i] and f.get("on", True)]
+                tail = t("first_tail", lang, n=max(firsts)) if changed and firsts and max(firsts) else t("only_new", lang)
+            tg.text(cid, f"{head}\n\n{all_summary(user, lang)}\n\n{tail}", markup=keyboard(user, lang))
         elif text.startswith("/start") or text.startswith("/lang") or text in LANG_BUTTONS or not user.get("lang"):
             tg.text(cid, LANG_PROMPT, markup=LANG_MENU)
-        elif not user.get("filters"):
+        elif text.startswith("/fav") or text in FAV_BUTTONS:
+            send_favorites(tg, cid, user)
+        elif not user.get("profiles"):
             send_welcome(tg, cid, user)
         else:
-            f = user["filters"]
-            state = t("paused", lang) + "\n\n" if f.get("paused") else ""
-            tg.text(cid, f"{state}{t('your_filters', lang)}\n\n{summary(f, lang)}\n\n"
-                         f"{t('change_hint', lang, btn=t('btn_filters', lang))}", markup=keyboard(f, lang))
+            send_filters(tg, cid, user)
 
 
 # ---------------------------------------------------------------- поиск
@@ -1077,64 +1273,164 @@ class Pages:
         return res
 
 
-def search_user(tg: Telegram, st: dict, cid: str, user: dict, pages: Pages, admins: list[str]) -> int:
-    f = user["filters"]
-    baseline = user.get("baseline", True)
-    now = datetime.now(timezone.utc).isoformat()
-    found: dict[str, tuple[Ad, str]] = {}           # ключ -> (объявление, flat/room)
-    ok_any = False
-    for src in f["src"]:
-        for kind in kinds(f):
-            sid = f"{src}-{kind}-{norm(f.get('city'))}"
-            try:
-                if baseline or needs_own_query(src, f, kind):
-                    url = SOURCES[src][0](f, kind)                       # запрос с фильтрами человека
-                else:
-                    url = SOURCES[src][0]({"city": f.get("city")}, kind)  # общая лента новых, фильтруем сами
-                if url is None:
-                    continue                                          # на этом сайте нет такого типа жилья
-                ads = pages.get(src, url)
-                st["errors"].pop(sid, None)
-                ok_any = True
-            except Exception as e:  # noqa: BLE001
-                n = st["errors"].get(sid, 0) + 1
-                st["errors"][sid] = n
-                log(f"[{sid}] ошибка: {e}")
-                if n == 3:
-                    for a in admins:
-                        tg.text(a, f"⚠️ {html.escape(sid)} не отвечает 3 проверки подряд:\n"
-                                   f"<code>{html.escape(str(e))[:300]}</code>")
-                continue
-            for a in ads:
-                if a.key not in user["seen"] and a.key not in found and passes(a, f, kind):
-                    found[a.key] = (a, kind)
-    fresh = sorted(found.values(), key=lambda x: x[0].created)
-    if baseline:
-        if not ok_any:
-            return 0
-        for a, _ in fresh:
-            user["seen"][a.key] = now
-        to_send = fresh[-f["first"]:] if f["first"] else []
-        user["baseline"] = False
-    else:
-        to_send = fresh[:15]                    # остальное — в следующую проверку
-    sent = 0
+def is_quiet(settings: dict, now: datetime | None = None) -> bool:
+    q = (settings or {}).get("quiet") or {}
+    if not q.get("on"):
+        return False
+    from zoneinfo import ZoneInfo
+    h = (now or datetime.now(ZoneInfo("Europe/Warsaw"))).hour
+    a, b = int(q.get("from", 23)), int(q.get("to", 7))
+    return (a <= h < b) if a < b else (h >= a or h < b)
+
+
+def remember(user: dict, ad: Ad, kind: str, city: str, msg_id: int | None, fp: str | None) -> None:
+    user["sent"].pop(ad.key, None)
+    user["sent"][ad.key] = {"t": ad.title[:120], "p": ad.price, "c": ad.czynsz, "a": ad.area, "u": ad.url,
+                            "l": ad.location[:100], "s": ad.source, "k": kind, "m": msg_id, "fp": fp,
+                            "city": city, "d": datetime.now(timezone.utc).isoformat()[:10]}
+
+
+def search_user(tg: Telegram, st: dict, cid: str, user: dict, pages: Pages, admins: list[str],
+                now_local: datetime | None = None) -> int:
+    settings = user["settings"]
+    if settings.get("paused"):
+        return 0
     lang = lang_of(user)
-    for a, kind in to_send:
-        res = tg.ad(cid, a, kind, lang)
-        if res.get("error_code") == 403:        # человек заблокировал бота
+    stats = st.setdefault("stats", {})
+    now = datetime.now(timezone.utc).isoformat()
+    profs = user.get("profiles") or []
+    multi = sum(1 for f in profs if f.get("on", True)) > 1
+    fresh: dict[str, tuple] = {}                  # ключ -> (объявление, flat/room, профиль, город)
+    drops: dict[str, tuple] = {}
+    first_send: list[tuple] = []
+    for i, f in enumerate(profs):
+        if not f.get("on", True):
+            continue
+        baseline = user["pbase"][i] if i < len(user["pbase"]) else True
+        pname = profile_label(f, i, lang) if multi else ""
+        city = CITY_NAMES.get(norm(f.get("city")), f.get("city") or "")
+        matched: dict[str, tuple] = {}
+        ok_any = False
+        for src in f["src"]:
+            for kind in kinds(f):
+                sid = f"{src}-{kind}-{norm(f.get('city'))}"
+                try:
+                    if baseline or needs_own_query(src, f, kind):
+                        url = SOURCES[src][0](f, kind)                       # запрос с фильтрами человека
+                    else:
+                        url = SOURCES[src][0]({"city": f.get("city")}, kind)  # общая лента новых, фильтруем сами
+                    if url is None:
+                        continue                                          # на этом сайте нет такого типа жилья
+                    ads = pages.get(src, url)
+                    st["errors"].pop(sid, None)
+                    ok_any = True
+                except Exception as e:  # noqa: BLE001
+                    n = st["errors"].get(sid, 0) + 1
+                    st["errors"][sid] = n
+                    log(f"[{sid}] ошибка: {e}")
+                    if n == 3:
+                        for a in admins:
+                            tg.text(a, f"⚠️ {html.escape(sid)} не отвечает 3 проверки подряд:\n"
+                                       f"<code>{html.escape(str(e))[:300]}</code>")
+                    continue
+                for a in ads:
+                    stats_add(stats, kind, city, a.key, a.price, a.area, a.places, a.zone)
+                for a in ads:
+                    if a.key in user["hidden"] or not passes(a, f, kind):
+                        continue
+                    if baseline:
+                        matched.setdefault(a.key, (a, kind, pname, city))
+                    elif a.key in user["seen"]:
+                        old = user["sent"].get(a.key)
+                        if old and old.get("p") and a.price and a.price <= old["p"] * 0.97:
+                            drops.setdefault(a.key, (a, kind, pname, city, old["p"]))
+                    else:
+                        fresh.setdefault(a.key, (a, kind, pname, city))
+        if baseline and ok_any:
+            items = sorted(matched.values(), key=lambda x: x[0].created)
+            for x in items:
+                user["seen"][x[0].key] = now
+                fresh.pop(x[0].key, None)
+            if f["first"]:
+                first_send += items[-f["first"]:]
+            user["pbase"][i] = False
+
+    quiet = is_quiet(settings, now_local)
+    queue = sorted(fresh.values(), key=lambda x: x[0].created)
+    if quiet:
+        user["held"] = max(user.get("held", 0), len(queue))
+        queue, drops = [], {}
+    elif user.get("held") and queue:
+        tg.text(cid, t("night", lang, n=len(queue)))
+    cap = 30 if user.get("held") else 15
+    if not quiet:
+        user["held"] = 0
+
+    # индекс отпечатков уже присланного — для склейки дублей с разных сайтов
+    fps = {v["fp"]: (k, v) for k, v in user["sent"].items() if v.get("fp")}
+    sent = 0
+    for item in first_send + queue[:cap]:
+        a, kind, pname, city = item
+        if a.key in user["seen"] and item not in first_send:
+            continue
+        fp = fingerprint(a.price, a.area, a.rooms)
+        if fp and fp in fps and fps[fp][0] != a.key and fps[fp][1].get("s") != a.source:
+            k0, v0 = fps[fp]                      # та же квартира на другом сайте (на одном сайте — не склеиваем)
+            user["seen"][a.key] = now
+            if k0 in user["hidden"]:
+                continue
+            res = tg.text(cid, f"{t('dup', lang, site=a.source)}\n<a href=\"{html.escape(a.url, quote=True)}\">"
+                               f"{html.escape(a.title[:100])}</a>", reply_to=v0.get("m"))
+            if res.get("error_code") == 403:
+                user["blocked"] = True
+                return sent
+            continue
+        ev = price_eval(stats, kind, city, a.key, a.price, a.area, a.places, a.zone)
+        flags = scam_flags(a.text, ev)
+        caption = render(a, kind, lang, ev, flags, pname)
+        res = tg.post(cid, caption, a.photo, ad_markup(a.key, a.url, a.location, lang, a.key in user["fav"], city))
+        if res.get("error_code") == 403:                  # человек заблокировал бота
             user["blocked"] = True
-            break
+            return sent
+        msg_id = ((res.get("result") or {}) if isinstance(res.get("result"), dict) else {}).get("message_id")
+        remember(user, a, kind, city, msg_id, fp)
         user["seen"][a.key] = now
+        if fp:
+            fps[fp] = (a.key, user["sent"][a.key])
+        sent += 1
+    for a, kind, pname, city, old_price in list(drops.values())[:10]:
+        head = t("drop", lang, old=fmt_money(old_price), new=fmt_money(a.price))
+        ev = price_eval(stats, kind, city, a.key, a.price, a.area, a.places, a.zone)
+        caption = render(a, kind, lang, ev, scam_flags(a.text, ev), pname, head=head)
+        res = tg.post(cid, caption, a.photo, ad_markup(a.key, a.url, a.location, lang, a.key in user["fav"], city))
+        if res.get("error_code") == 403:
+            user["blocked"] = True
+            return sent
+        msg_id = ((res.get("result") or {}) if isinstance(res.get("result"), dict) else {}).get("message_id")
+        remember(user, a, kind, city, msg_id, fingerprint(a.price, a.area, a.rooms))
+        if a.key in user["fav"]:
+            user["fav"][a.key]["p"] = a.price
         sent += 1
     return sent
+
+
+_TRIES: dict[str, float] = {}
+
+
+def needs_baseline(cid: str, u: dict) -> bool:
+    """Есть включённый профиль с новыми фильтрами (и прошло 2 минуты с прошлой попытки)."""
+    if not u.get("profiles") or u["settings"].get("paused") or u.get("blocked"):
+        return False
+    if time.time() - _TRIES.get(cid, 0) < 120:
+        return False
+    return any(b and f.get("on", True) for b, f in zip(u.get("pbase") or [], u["profiles"]))
 
 
 def search_round(tg: Telegram, st: dict, admins: list[str], only: list[str] | None = None) -> None:
     pages = Pages()
     total = 0
     active = [(cid, u) for cid, u in st["users"].items()
-              if u.get("filters") and not u["filters"].get("paused") and not u.get("blocked")
+              if u.get("profiles") and not u["settings"].get("paused") and not u.get("blocked")
               and (only is None or cid in only)]
     for cid, u in active:
         total += search_user(tg, st, cid, u, pages, admins)
@@ -1167,9 +1463,10 @@ def main() -> int:
         handle_updates(tg, st, wait=int(max(1, min(25, left - 3))))
         if time.time() - t0 < 1:
             time.sleep(2)                                   # Telegram ответил ошибкой сразу — не долбим
-        pending = [cid for cid, u in st["users"].items()
-                   if u.get("baseline") and u.get("filters") and not u["filters"].get("paused")]
+        pending = [cid for cid, u in st["users"].items() if needs_baseline(cid, u)]
         if pending:
+            for cid in pending:
+                _TRIES[cid] = time.time()
             search_round(tg, st, admins, only=pending)       # новые фильтры — ищем сразу
         if time.time() - last >= every:
             search_round(tg, st, admins)
