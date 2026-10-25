@@ -198,6 +198,7 @@
       <button type="button" data-v="3">3</button>
       <button type="button" data-v="5">5</button>
       <button type="button" data-v="10">10</button>
+      <button type="button" data-v="999" data-i18n="all_btn"></button>
     </div>
     <div class="hint" data-i18n="first_hint"></div>
   </section>
@@ -283,7 +284,7 @@ const I18N = {
     h_more: "Ещё", l_furn: "С мебелью", l_priv: "Только от частников", priv_hint: "Без агентств",
     l_excl: "Не показывать, если в объявлении есть", l_incl: "Показывать, только если есть хотя бы одно",
     ph_incl: "например: zmywarka, ogródek (пусто — не важно)", words_hint: "Слова через запятую, можно по-польски без ą/ę.",
-    l_first: "После сохранения прислать самые свежие",
+    l_first: "Сколько текущих объявлений прислать после сохранения", all_btn: "Все",
     first_hint: "Дальше бот присылает только новые объявления. Подтверждение придёт сообщением — обычно сразу, иногда в течение 10 минут.",
     save: "Сохранить фильтры", err_src: "Выбери хотя бы один сайт.", err_price: "Цена «от» больше, чем «до».",
     err_area: "Площадь «от» больше, чем «до».", open_in_tg: "Открой эту страницу кнопкой «⚙️ Фильтры» в боте — тогда фильтры сохранятся.",
@@ -322,7 +323,7 @@ const I18N = {
     h_more: "Więcej", l_furn: "Umeblowane", l_priv: "Tylko prywatne", priv_hint: "Bez biur nieruchomości",
     l_excl: "Nie pokazuj, jeśli ogłoszenie zawiera", l_incl: "Pokazuj tylko, jeśli zawiera choć jedno",
     ph_incl: "np.: zmywarka, ogródek (puste — obojętnie)", words_hint: "Słowa po przecinku, można bez ą/ę.",
-    l_first: "Po zapisaniu wyślij najnowsze",
+    l_first: "Ile obecnych ogłoszeń wysłać po zapisaniu", all_btn: "Wszystkie",
     first_hint: "Potem bot wysyła tylko nowe ogłoszenia. Potwierdzenie przyjdzie wiadomością — zwykle od razu, czasem w ciągu 10 minut.",
     save: "Zapisz filtry", err_src: "Wybierz co najmniej jeden portal.", err_price: "Cena „od” jest większa niż „do”.",
     err_area: "Powierzchnia „od” jest większa niż „do”.", open_in_tg: "Otwórz tę stronę przyciskiem „⚙️ Filtry” w bocie — wtedy filtry się zapiszą.",
@@ -361,7 +362,7 @@ const I18N = {
     h_more: "More", l_furn: "Furnished", l_priv: "Private owners only", priv_hint: "No agencies",
     l_excl: "Hide if the listing contains", l_incl: "Show only if it contains at least one",
     ph_incl: "e.g.: zmywarka, ogródek (empty = any)", words_hint: "Comma-separated words, Polish without ą/ę is fine.",
-    l_first: "After saving, send the newest",
+    l_first: "How many current listings to send after saving", all_btn: "All",
     first_hint: "After that the bot sends only new listings. You'll get a confirmation message — usually right away, sometimes within 10 minutes.",
     save: "Save filters", err_src: "Pick at least one site.", err_price: "Price “from” is higher than “to”.",
     err_area: "Area “from” is larger than “to”.", open_in_tg: "Open this page with the “⚙️ Filters” button in the bot to save filters.",
@@ -400,7 +401,7 @@ const I18N = {
     h_more: "Ще", l_furn: "З меблями", l_priv: "Лише від власників", priv_hint: "Без агентств",
     l_excl: "Не показувати, якщо в оголошенні є", l_incl: "Показувати, лише якщо є хоча б одне",
     ph_incl: "наприклад: zmywarka, ogródek (порожньо — неважливо)", words_hint: "Слова через кому, можна польською без ą/ę.",
-    l_first: "Після збереження надіслати найсвіжіші",
+    l_first: "Скільки поточних оголошень надіслати після збереження", all_btn: "Усі",
     first_hint: "Далі бот надсилає лише нові оголошення. Підтвердження прийде повідомленням — зазвичай одразу, іноді протягом 10 хвилин.",
     save: "Зберегти фільтри", err_src: "Обери хоча б один сайт.", err_price: "Ціна «від» більша, ніж «до».",
     err_area: "Площа «від» більша, ніж «до».", open_in_tg: "Відкрий цю сторінку кнопкою «⚙️ Фільтри» в боті — тоді фільтри збережуться.",
