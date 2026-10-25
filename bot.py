@@ -191,7 +191,8 @@ def fetch(url: str, retries: int = 2) -> str:
     last = None
     for i in range(retries + 1):
         try:
-            r = requests.get(url, headers=HEADERS, timeout=30)
+            h = dict(HEADERS, Accept="application/json") if "/api/" in url else HEADERS
+            r = requests.get(url, headers=h, timeout=30)
             if r.status_code == 200:
                 return r.text
             last = f"HTTP {r.status_code}"
@@ -207,46 +208,77 @@ def words(s: str) -> list[str]:
 
 # ---------------------------------------------------------------- OLX
 
+OLX_CITY_IDS = {"szczecin": 16705, "warszawa": 17871, "krakow": 8959, "wroclaw": 19701, "poznan": 13983,
+                "gdansk": 5659, "gdynia": 5849, "lodz": 10609, "katowice": 7691, "lublin": 10119,
+                "bydgoszcz": 4019, "bialystok": 1079}
+
+
 def olx_url(f: dict, kind: str) -> str:
-    city = norm(f.get("city") or "szczecin").replace(" ", "-")
-    q: list[tuple[str, str]] = [("search[order]", "created_at:desc")]
+    """Запрос к API OLX (тот же, которым пользуется сам сайт; HTML-страницы OLX блокирует для серверов)."""
+    city = norm(f.get("city") or "szczecin")
+    if city not in OLX_CITY_IDS:
+        raise RuntimeError(f"OLX: город «{f.get('city')}» не поддерживается")
+    q: list[tuple[str, str]] = [("offset", "0"), ("limit", "50"), ("category_id", "15" if kind == "flat" else "11"),
+                                ("city_id", str(OLX_CITY_IDS[city])), ("sort_by", "created_at:desc")]
     if f.get("pMin"):
-        q.append(("search[filter_float_price:from]", str(f["pMin"])))
+        q.append(("filter_float_price:from", str(f["pMin"])))
     if f.get("pMax"):
-        q.append(("search[filter_float_price:to]", str(f["pMax"])))
+        q.append(("filter_float_price:to", str(f["pMax"])))
     if f.get("priv"):
-        q.append(("search[private_business]", "private"))
+        q.append(("owner_type", "private"))
     if f.get("furn"):
-        q.append(("search[filter_enum_furniture][0]", "yes"))
+        q.append(("filter_enum_furniture[0]", "yes"))
     if kind == "flat":
-        path = "mieszkania/wynajem"
         for i, r in enumerate(sorted({min(int(x), 4) for x in f.get("rooms") or []})):
-            q.append((f"search[filter_enum_rooms][{i}]", ROOMS_OLX[r]))
+            q.append((f"filter_enum_rooms[{i}]", ROOMS_OLX[r]))
         if f.get("aMin"):
-            q.append(("search[filter_float_m:from]", str(f["aMin"])))
+            q.append(("filter_float_m:from", str(f["aMin"])))
         if f.get("aMax"):
-            q.append(("search[filter_float_m:to]", str(f["aMax"])))
+            q.append(("filter_float_m:to", str(f["aMax"])))
         if f.get("pets"):
-            q.append(("search[filter_enum_pets][0]", "Tak"))
+            q.append(("filter_enum_pets[0]", "Tak"))
         if "LIFT" in (f.get("ex") or []):
-            q.append(("search[filter_enum_winda][0]", "Tak"))
+            q.append(("filter_enum_winda[0]", "Tak"))
         bts = [v for code in f.get("bt") or [] for v in BUILDING.get(code, [])]
         for i, v in enumerate(bts):
-            q.append((f"search[filter_enum_builttype][{i}]", v))
+            q.append((f"filter_enum_builttype[{i}]", v))
     else:
-        path = "stancje-pokoje"
         for i, p in enumerate(sorted(f.get("ppl") or [])):
-            q.append((f"search[filter_enum_roomsize][{i}]", PEOPLE_OLX[int(p)]))
-    return f"https://www.olx.pl/nieruchomosci/{path}/{city}/?" + urlencode(q)
+            q.append((f"filter_enum_roomsize[{i}]", PEOPLE_OLX[int(p)]))
+    return "https://www.olx.pl/api/v1/offers/?" + urlencode(q)
 
 
-def parse_olx(page: str) -> list[Ad]:
+def _olx_raw_ads(page: str) -> list[dict]:
+    """Объявления OLX в одном виде — и из API (JSON), и из HTML-страницы."""
+    if page.lstrip().startswith("{"):
+        out = []
+        for a in json.loads(page).get("data") or []:
+            params, price = [], None
+            for x in a.get("params") or []:
+                v = x.get("value") or {}
+                if x.get("key") == "price":
+                    price = v.get("value")
+                    continue
+                k = v.get("key")
+                params.append({"key": x.get("key"), "normalizedValue": ",".join(map(str, k)) if isinstance(k, list) else k})
+            loc = a.get("location") or {}
+            photos = [ph.get("link") for ph in a.get("photos") or [] if ph.get("link")]
+            out.append({"id": a.get("id"), "title": a.get("title"), "description": a.get("description"),
+                        "url": a.get("url"), "externalUrl": a.get("external_url"), "isBusiness": a.get("business"),
+                        "createdTime": a.get("created_time"), "price": {"regularPrice": {"value": price}},
+                        "params": params, "photos": photos,
+                        "location": {"cityName": (loc.get("city") or {}).get("name"),
+                                     "districtName": (loc.get("district") or {}).get("name")}})
+        return out
     m = re.search(r'window\.__PRERENDERED_STATE__\s*=\s*("(?:[^"\\]|\\.)*")', page)
     if not m:
         raise RuntimeError("OLX: не найден блок данных на странице (сайт мог измениться)")
-    state = json.loads(json.loads(m.group(1)))
+    return json.loads(json.loads(m.group(1)))["listing"]["listing"]["ads"]
+
+
+def parse_olx(page: str) -> list[Ad]:
     ads = []
-    for a in state["listing"]["listing"]["ads"]:
+    for a in _olx_raw_ads(page):
         p = {x.get("key"): x for x in a.get("params") or []}
         val = lambda k: (p.get(k) or {}).get("normalizedValue")  # noqa: E731
         loc = a.get("location") or {}
