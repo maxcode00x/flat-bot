@@ -1,18 +1,21 @@
-# Бот поиска жилья — OLX + Otodom → Telegram
+# Бот поиска жилья — OLX, Otodom, Domiporta, Nieruchomosci-online → Telegram
 
-Каждые ~10 минут проверяет OLX и Otodom и присылает в Telegram новые объявления
-по твоим фильтрам. Фильтры выбираются кнопкой **⚙️ Фильтры** прямо в боте.
+Каждые ~10 минут проверяет OLX, Otodom, Domiporta и Nieruchomosci-online и присылает
+в Telegram новые объявления по фильтрам каждого пользователя. Языки: русский, польский,
+английский, украинский (выбор при /start или кнопкой 🌐). Фильтры выбираются кнопкой **⚙️ Фильтры** прямо в боте.
 Работает на GitHub Actions — компьютер включать не нужно.
 
 ## Файлы
 - `bot.py` — сам бот
+- `i18n.py` — тексты бота на 4 языках
 - `docs/index.html` — страница фильтров (открывается в Telegram, хостится на GitHub Pages)
 - `.github/workflows/flat-bot.yml` — расписание запуска
 - `seen.json` — появится сам; зашифрован, в публичном репозитории его никто не прочитает
 
 ## Секреты (Settings → Secrets and variables → Actions)
 - `TELEGRAM_BOT_TOKEN` — токен от @BotFather
-- `TELEGRAM_CHAT_ID` — твой ID (можно несколько через запятую). Бот отвечает только этим людям.
+- `TELEGRAM_CHAT_ID` — твой ID (админ): сюда приходят предупреждения, если сайт перестал отвечать.
+  Пользоваться ботом может любой — у каждого свои фильтры.
 
 ## GitHub Pages (нужно для кнопки «⚙️ Фильтры»)
 Settings → Pages → Build and deployment → Source: **Deploy from a branch** →

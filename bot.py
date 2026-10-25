@@ -20,9 +20,13 @@ import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import requests
+from bs4 import BeautifulSoup
+
+from i18n import (BUILDING_T, EXTRAS_T, HEATING_T, LANG_NAMES, LANG_PROMPT, LANGS, PREF_T, T,
+                  lang_of, t, tr)
 
 ROOT = Path(__file__).resolve().parent
 STATE_PATH = Path(os.environ.get("BOT_STATE", ROOT / "seen.json"))
@@ -76,8 +80,7 @@ ALL_OSIEDLA = [o for group in SZCZECIN.values() for o in group]   # порядо
 # Тип дома: код Otodom -> значения OLX
 BUILDING = {"BLOCK": ["blok"], "TENEMENT": ["kamienica"], "APARTMENT": ["apartamentowiec"],
             "HOUSE": ["wolnostojacy", "szeregowiec"], "LOFT": ["loft"], "OTHER": ["pozostale"]}
-BUILDING_RU = {"BLOCK": "блок", "TENEMENT": "каменица", "APARTMENT": "апартаментовец", "HOUSE": "дом",
-               "LOFT": "лофт", "OTHER": "другое"}
+
 
 # Удобства: код Otodom -> поиск по тексту объявления OLX (там таких фильтров нет)
 EXTRAS_TEXT = {
@@ -90,13 +93,11 @@ EXTRAS_TEXT = {
     "SEPARATE_KITCHEN": r"(oddzieln|osobn)\w* kuchn",
     "INTERNET": r"internet|wi-?fi|swiatlowod",
 }
-EXTRAS_RU = {"BALCONY": "балкон", "TERRACE": "терраса", "GARDEN": "сад", "LIFT": "лифт", "GARAGE": "гараж/парковка",
-             "AIR_CONDITIONING": "кондиционер", "SEPARATE_KITCHEN": "отдельная кухня", "INTERNET": "интернет"}
+
 
 # Отопление: код Otodom -> как это пишут в тексте объявлений OLX
 HEATING = ["URBAN", "GAS", "ELECTRICAL", "BOILER_ROOM", "TILED_STOVE", "OTHER"]
-HEATING_RU = {"URBAN": "городское (miejskie)", "GAS": "газовое", "ELECTRICAL": "электрическое",
-              "BOILER_ROOM": "котельная", "TILED_STOVE": "кафельная печь", "OTHER": "другое"}
+
 HEATING_TEXT = {
     "URBAN": r"miejsk|msc|siec\w* cieplown|cieplo systemowe|c\.?\s?o\.? z sieci",
     "GAS": r"gazow|piec dwufunkcyjny",
@@ -109,12 +110,15 @@ FLOORS_OTODOM = ["GROUND", "FIRST", "SECOND", "THIRD", "FOURTH", "FIFTH", "SIXTH
                  "NINTH", "TENTH", "ABOVE_TENTH"]          # индекс = этаж (11 = выше 10)
 FLOOR_FROM_OTODOM = {v: i for i, v in enumerate(FLOORS_OTODOM)} | {"CELLAR": 0, "GARRET": None}
 
-PREF_RU = {"man": "мужчине", "women": "женщине", "student": "студенту", "working": "работающему"}
+PREFS = ["man", "women", "student", "working"]
 PEOPLE_OTODOM = {1: "ONE", 2: "TWO", 3: "THREE"}
 PEOPLE_OLX = {1: "one", 2: "two", 3: "three"}
 
+ALL_SOURCES = ["olx", "otodom", "domiporta", "nol"]
+SOURCE_NAMES = {"olx": "OLX", "otodom": "Otodom", "domiporta": "Domiporta", "nol": "Nieruchomosci-online"}
+
 DEFAULT_FILTERS = {
-    "v": 1, "type": "flat", "src": ["olx", "otodom"], "city": "szczecin", "dist": [], "noDist": True,
+    "v": 2, "type": "flat", "src": list(ALL_SOURCES), "city": "szczecin", "dist": [], "noDist": True,
     "pMin": None, "pMax": None, "tMax": None, "rooms": [], "aMin": None, "aMax": None, "floors": [],
     "bt": [], "ex": [], "heat": [], "furn": False, "pets": False, "yearMin": None, "ppl": [], "pref": "",
     "priv": False, "excl": "tylko dla kobiet, tylko dla studentek, na doby, krótkoterminowy", "incl": "",
@@ -125,9 +129,10 @@ DEFAULT_FILTERS = {
 @dataclass
 class Ad:
     key: str
-    source: str
+    source: str                                       # название сайта для подписи
     title: str
     url: str
+    site: str = ""                                    # код сайта: olx / otodom / domiporta / nol
     price: float | None = None
     czynsz: float | None = None
     area: float | None = None
@@ -147,7 +152,7 @@ class Ad:
     photo: str | None = None
     text: str = ""
     created: str = ""
-    extra: list[str] = field(default_factory=list)
+    extra: list[tuple] = field(default_factory=list)   # коды: ("furn",), ("floor", 3) ...
 
     @property
     def total(self) -> float | None:
@@ -176,6 +181,12 @@ def num(v) -> float | None:
         return float(s) if s else None
     except ValueError:
         return None
+
+
+def area_num(s: str) -> float | None:
+    """«36 m2», «41,10 m²» -> 36.0, 41.1 (без цифры 2 из m2)."""
+    m = re.search(r"(\d[\d\s]*(?:[.,]\d+)?)\s*m", s or "")
+    return num(m.group(1)) if m else None
 
 
 def fmt_money(v: float | None) -> str:
@@ -207,6 +218,21 @@ def words(s: str) -> list[str]:
 
 
 # ---------------------------------------------------------------- OLX
+
+def extras_codes(floor=None, furn=False, pets=False, people=None, prefs=None) -> list[tuple]:
+    out: list[tuple] = []
+    if furn:
+        out.append(("furn",))
+    if pets:
+        out.append(("pets",))
+    if floor is not None:
+        out.append(("floor", floor))
+    if people:
+        out.append(("people", people))
+    if prefs:
+        out.append(("prefs", tuple(prefs)))
+    return out
+
 
 OLX_CITY_IDS = {"szczecin": 16705, "warszawa": 17871, "krakow": 8959, "wroclaw": 19701, "poznan": 13983,
                 "gdansk": 5659, "gdynia": 5849, "lodz": 10609, "katowice": 7691, "lublin": 10119,
@@ -301,22 +327,13 @@ def parse_olx(page: str) -> list[Ad]:
         pets = val("pets")
         lift = val("winda")
         people = {"one": 1, "two": 2, "three": 3}.get(str(val("roomsize")))
-        extra = []
-        if furn == "yes":
-            extra.append("с мебелью")
-        if pets == "Tak":
-            extra.append("можно с животными")
-        if floor is not None:
-            extra.append("партер" if floor == 0 else f"этаж {floor}")
-        if people:
-            extra.append(f"на {people} чел.")
         prefs = [x for x in str(val("preferences") or "").split(",") if x]
-        if prefs:
-            extra.append("для: " + ", ".join(PREF_RU.get(x, x) for x in prefs))
+        extra = extras_codes(floor=floor, furn=furn == "yes", pets=pets == "Tak", people=people, prefs=prefs)
         district = loc.get("districtName")
         ads.append(Ad(
             key=f"otodom:{tok}" if tok else f"olx:{a['id']}",
-            source="Otodom (через OLX)" if tok else "OLX",
+            source="OLX",
+            site="olx",
             title=a.get("title") or "",
             url=ext if tok else a.get("url"),
             price=num(((a.get("price") or {}).get("regularPrice") or {}).get("value")),
@@ -402,14 +419,11 @@ def parse_otodom(page: str) -> list[Ad]:
         imgs = it.get("images") or []
         floor = FLOOR_FROM_OTODOM.get(str(it.get("floorNumber") or ""))
         people = {"ONE": 1, "TWO": 2, "THREE": 3}.get(str(it.get("peoplePerRoom")))
-        extra = []
-        if floor is not None:
-            extra.append("партер" if floor == 0 else ("этаж 10+" if floor == 11 else f"этаж {floor}"))
-        if people:
-            extra.append(f"на {people} чел.")
+        extra = extras_codes(floor=floor, people=people)
         ads.append(Ad(
             key=f"otodom:{tok}",
             source="Otodom",
+            site="otodom",
             title=it.get("title") or "",
             url=f"https://www.otodom.pl/pl/oferta/{slug}",
             price=num((it.get("totalPrice") or {}).get("value")),
@@ -430,7 +444,166 @@ def parse_otodom(page: str) -> list[Ad]:
     return ads
 
 
-SOURCES = {"olx": (olx_url, parse_olx), "otodom": (otodom_url, parse_otodom)}
+
+# ---------------------------------------------------------------- Domiporta (только квартиры)
+
+VOIVODESHIPS = {"szczecin": "zachodniopomorskie", "warszawa": "mazowieckie", "krakow": "malopolskie",
+                "wroclaw": "dolnoslaskie", "poznan": "wielkopolskie", "gdansk": "pomorskie", "gdynia": "pomorskie",
+                "lodz": "lodzkie", "katowice": "slaskie", "lublin": "lubelskie", "bydgoszcz": "kujawsko-pomorskie",
+                "bialystok": "podlaskie"}
+ZONES = {norm(z): z for z in SZCZECIN}
+
+
+def domiporta_url(f: dict, kind: str) -> str | None:
+    if kind != "flat":
+        return None                                   # комнат на Domiporta нет
+    city = norm(f.get("city") or "szczecin")
+    if city not in VOIVODESHIPS:
+        raise RuntimeError(f"Domiporta: город «{f.get('city')}» не поддерживается")
+    q: list[tuple[str, str]] = [("SortingOrderDirection", "InsertionDateDescending"), ("RowsPerPage", "72")]
+    for key, name in (("pMin", "Price.From"), ("pMax", "Price.To"), ("aMin", "Surface.From"), ("aMax", "Surface.To")):
+        if f.get(key):
+            q.append((name, str(f[key])))
+    rooms = sorted({min(int(x), 4) for x in f.get("rooms") or []})
+    if rooms:
+        q.append(("Rooms.From", str(rooms[0])))
+        if rooms[-1] < 4:
+            q.append(("Rooms.To", str(rooms[-1])))
+    return f"https://www.domiporta.pl/mieszkanie/wynajme/{VOIVODESHIPS[city]}/{city}?" + urlencode(q)
+
+
+def split_places(parts: list[str], city: str | None) -> tuple[list[str], str | None]:
+    """Из «Szczecin, Śródmieście, Pogodno, ul. X 5» достаём осидла и дзельницу."""
+    places, zone = [], None
+    for part in parts:
+        p = part.strip()
+        if not p or (city and norm(p) == norm(city)):
+            continue
+        if norm(p) in ZONES:
+            zone = ZONES[norm(p)]
+        elif not re.search(r"\d|^(ul|al|pl|os)\.", p, re.I):
+            places.append(p)
+    return places, zone
+
+
+def parse_domiporta(page: str) -> list[Ad]:
+    soup = BeautifulSoup(page, "html.parser")
+    cards = soup.select("article.sneakpeak[data-detail-id]")
+    if not cards and "sneakpeak" not in page:
+        raise RuntimeError("Domiporta: не найден список объявлений (сайт мог измениться)")
+    ads = []
+    for c in cards:
+        link = c.select_one('a[href^="/nieruchomosci/"]')
+        title_el = c.select_one(".sneakpeak__title--bold")
+        loc_el = c.select_one(".sneakpeak__title--inblock")
+        price_el = c.select_one(".sneakpeak__price_value")
+        fee_el = c.select_one(".sneakpeak__price_fee")
+        det = []
+        for d in c.select(".sneakpeak__details_item"):
+            txt = d.get_text(" ", strip=True)
+            if txt and txt not in det:
+                det.append(txt)
+        area = next((area_num(x) for x in det if "m2" in x.replace(" ", "") and "zł" not in x), None)
+        rooms_txt = next((x for x in det if re.fullmatch(r"\d+", x)), None)
+        loc_parts = re.sub(r"^\s*\w+\s+", "", loc_el.get_text(" ", strip=True)) if loc_el else ""
+        city = loc_parts.split(",")[0].strip() if loc_parts else None
+        places, zone = split_places(loc_parts.split(","), city)
+        img = c.select_one("img")
+        photo = img.get("src") if img else None
+        if photo:
+            photo = photo.replace("/pictures/small/", "/pictures/big/")
+        descr = c.select_one(".sneakpeak__description")
+        title = title_el.get_text(" ", strip=True) if title_el else (link.get("title", "") if link else "")
+        ads.append(Ad(
+            key=f"domiporta:{c['data-detail-id']}",
+            source="Domiporta",
+            site="domiporta",
+            title=title,
+            url="https://www.domiporta.pl" + link["href"] if link else "https://www.domiporta.pl",
+            price=num(price_el.get_text(" ", strip=True)) if price_el else None,
+            czynsz=num(fee_el.get_text(" ", strip=True)) if fee_el else None,
+            area=area,
+            rooms=min(int(rooms_txt), 4) if rooms_txt else None,
+            places=places,
+            zone=zone,
+            location=loc_parts,
+            photo=photo,
+            text=f"{title} {descr.get_text(' ', strip=True) if descr else ''}",
+        ))
+    return ads
+
+
+# ---------------------------------------------------------------- Nieruchomosci-online
+
+def nol_url(f: dict, kind: str) -> str:
+    city = CITY_NAMES.get(norm(f.get("city") or "szczecin"))
+    if not city:
+        raise RuntimeError(f"Nieruchomosci-online: город «{f.get('city')}» не поддерживается")
+    fields = ["3", "mieszkanie" if kind == "flat" else "pokoj", "wynajem", "", city, "", "", "", "", ""]
+    if f.get("pMin") or f.get("pMax"):
+        fields[8] = f"{f.get('pMin') or ''}-{f.get('pMax') or ''}"
+    if kind == "flat" and (f.get("aMin") or f.get("aMax")):
+        fields[9] = f"{f.get('aMin') or ''}-{f.get('aMax') or ''}"
+    while fields and fields[-1] == "":
+        fields.pop()
+    return "https://www.nieruchomosci-online.pl/szukaj.html?" + quote(",".join(fields), safe=",-")
+
+
+def parse_nol(page: str) -> list[Ad]:
+    soup = BeautifulSoup(page, "html.parser")
+    tiles = soup.select("div.tile[data-id]")
+    if not tiles and "tile" not in page:
+        raise RuntimeError("Nieruchomosci-online: не найден список объявлений (сайт мог измениться)")
+    ads = []
+    for tl in tiles:
+        ad_id = re.sub(r"\D", "", tl.get("data-id", ""))
+        a = tl.select_one("h2.name a") or tl.select_one("h2 a")
+        if not ad_id or not a:
+            continue
+        attrs = {}
+        for it in tl.select(".attributes__box--item"):
+            txt = it.get_text(" ", strip=True)
+            if ":" in txt:
+                k, v = txt.split(":", 1)
+                attrs[norm(k)] = v.strip()
+        price_el = tl.select_one("p.title-a span")
+        area_el = tl.select_one("span.area")
+        prov = tl.select_one("p.province")
+        loc = prov.get_text(",", strip=True) if prov else ""
+        parts = [x for x in (y.strip(" ,") for y in loc.split(",")) if x]
+        city = parts[-1] if parts else None
+        places, zone = split_places(parts, city)
+        fl = attrs.get("pietro", "")
+        floor = 0 if norm(fl).startswith("parter") else (int(m.group()) if (m := re.match(r"\d+", fl)) else None)
+        rooms = attrs.get("liczba pokoi")
+        furn = attrs.get("umeblowane") or attrs.get("umeblowany")
+        img = tl.select_one("img")
+        desc = tl.select_one(".desc")
+        title = a.get_text(" ", strip=True)
+        href = a.get("href", "")
+        ads.append(Ad(
+            key=f"nol:{ad_id}",
+            source="Nieruchomosci-online",
+            site="nol",
+            title=title,
+            url=href if href.startswith("http") else "https:" + href if href.startswith("//") else href,
+            price=num(price_el.get_text(" ", strip=True)) if price_el else None,
+            area=area_num(area_el.get_text(" ", strip=True)) if area_el else None,
+            rooms=min(int(rooms), 4) if rooms and rooms.isdigit() else None,
+            floor=floor,
+            places=places,
+            zone=zone,
+            location=", ".join(reversed(parts)),
+            furniture=None if not furn else norm(furn).startswith("tak"),
+            photo=img.get("src") if img else None,
+            text=f"{title} {desc.get_text(' ', strip=True) if desc else ''}",
+            extra=extras_codes(floor=floor, furn=bool(furn) and norm(furn).startswith("tak")),
+        ))
+    return ads
+
+
+SOURCES = {"olx": (olx_url, parse_olx), "otodom": (otodom_url, parse_otodom),
+           "domiporta": (domiporta_url, parse_domiporta), "nol": (nol_url, parse_nol)}
 
 
 # ---------------------------------------------------------------- фильтры
@@ -497,7 +670,7 @@ def passes(ad: Ad, f: dict, kind: str) -> bool:
             return False
         if f.get("pets") and ad.pets is False:
             return False
-        if ad.source == "OLX":       # на OLX нет фильтров удобств — проверяем по тексту
+        if ad.site != "otodom":      # фильтры удобств есть только у Otodom — у остальных проверяем текст
             t = norm(ad.text)
             for code in f.get("ex") or []:
                 if code == "LIFT" and ad.lift is not None:
@@ -529,60 +702,60 @@ def kinds(f: dict) -> list[str]:
     return ["flat", "room"] if t == "both" else [t if t in ("flat", "room") else "flat"]
 
 
-def rng(lo, hi, unit: str) -> str:
+def rng(lo, hi, unit: str, lang: str = "ru") -> str:
     if lo and hi:
         return f"{lo}–{hi} {unit}"
-    return f"от {lo} {unit}" if lo else f"до {hi} {unit}"
+    return f"{t('from', lang)} {lo} {unit}" if lo else f"{t('to', lang)} {hi} {unit}"
 
 
-def summary(f: dict) -> str:
+def summary(f: dict, lang: str = "ru") -> str:
     e = html.escape
-    t = {"flat": "квартира", "room": "комната", "both": "квартира или комната"}[f.get("type", "flat")]
-    lines = [f"🔎 <b>{t}</b>, {e(CITY_NAMES.get(norm(f.get('city')), f.get('city') or ''))} · "
-             + " + ".join({"olx": "OLX", "otodom": "Otodom"}[s] for s in f.get("src") or [])]
+    kind = t({"flat": "kind_flat", "room": "kind_room", "both": "kind_both"}[f.get("type", "flat")], lang)
+    lines = [f"🔎 <b>{kind}</b>, {e(CITY_NAMES.get(norm(f.get('city')), f.get('city') or ''))} · "
+             + " + ".join(SOURCE_NAMES[x] for x in f.get("src") or [] if x in SOURCE_NAMES)]
     if f.get("dist"):
         lines.append("📍 " + e(", ".join(f["dist"][:12])) + (" …" if len(f["dist"]) > 12 else ""))
     pr = []
     if f.get("pMin") or f.get("pMax"):
-        pr.append("аренда " + rng(f.get("pMin"), f.get("pMax"), "zł"))
+        pr.append(t("rent", lang) + " " + rng(f.get("pMin"), f.get("pMax"), "zł", lang))
     if f.get("tMax"):
-        pr.append(f"с czynsz до {f['tMax']} zł")
+        pr.append(t("total_max", lang, v=f["tMax"]))
     if pr:
         lines.append("💰 " + ", ".join(pr))
     if f.get("type") in ("flat", "both"):
         fl = []
         if f.get("rooms"):
-            fl.append("комнат: " + ", ".join("4+" if int(r) >= 4 else str(r) for r in sorted(f["rooms"])))
+            fl.append(t("rooms_n", lang) + ": " + ", ".join("4+" if int(r) >= 4 else str(r) for r in sorted(f["rooms"])))
         if f.get("aMin") or f.get("aMax"):
-            fl.append(rng(f.get("aMin"), f.get("aMax"), "m²"))
+            fl.append(rng(f.get("aMin"), f.get("aMax"), "m²", lang))
         if f.get("floors"):
-            fl.append("этаж: " + ", ".join("партер" if int(x) == 0 else ("10+" if int(x) == 11 else str(x))
-                                            for x in sorted(f["floors"])))
+            fl.append(t("floor", lang) + ": " + ", ".join(
+                t("ground", lang) if int(x) == 0 else ("10+" if int(x) == 11 else str(x)) for x in sorted(f["floors"])))
         if f.get("bt"):
-            fl.append(", ".join(BUILDING_RU[b] for b in f["bt"] if b in BUILDING_RU))
+            fl.append(", ".join(tr(BUILDING_T, b, lang) for b in f["bt"]))
         if f.get("yearMin"):
-            fl.append(f"дом от {f['yearMin']} г.")
+            fl.append(t("built_from", lang, y=f["yearMin"]))
         if fl:
             lines.append("🏠 " + " · ".join(fl))
         if f.get("heat"):
-            lines.append("🔥 отопление: " + ", ".join(HEATING_RU[h] for h in f["heat"]))
-        ex = [EXTRAS_RU[x] for x in f.get("ex") or [] if x in EXTRAS_RU]
+            lines.append("🔥 " + t("heating", lang) + ": " + ", ".join(tr(HEATING_T, h, lang) for h in f["heat"]))
+        ex = [tr(EXTRAS_T, x, lang) for x in f.get("ex") or []]
         if f.get("furn"):
-            ex.append("с мебелью")
+            ex.append(t("furn", lang))
         if f.get("pets"):
-            ex.append("можно с животными")
+            ex.append(t("pets", lang))
         if ex:
             lines.append("✔️ " + ", ".join(ex))
     if f.get("type") in ("room", "both"):
         rm = []
         if f.get("ppl"):
-            rm.append("на " + "/".join(str(p) for p in sorted(f["ppl"])) + " чел.")
+            rm.append(t("room_for", lang, n="/".join(str(p) for p in sorted(f["ppl"]))))
         if f.get("pref"):
-            rm.append("сдают " + PREF_RU.get(f["pref"], f["pref"]))
+            rm.append(t("rented_to", lang, who=tr(PREF_T, f["pref"], lang)))
         if rm:
-            lines.append("🛏 комната " + ", ".join(rm))
+            lines.append("🛏 " + ", ".join(rm))
     if f.get("priv"):
-        lines.append("👤 только частники")
+        lines.append("👤 " + t("private_only", lang))
     if f.get("excl"):
         lines.append("🚫 " + e(f["excl"][:150]))
     if f.get("incl"):
@@ -595,8 +768,9 @@ def clean_filters(raw: dict) -> dict:
     for k in DEFAULT_FILTERS:
         if k in raw:
             f[k] = raw[k]
+    f["v"] = 2
     f["type"] = f["type"] if f["type"] in ("flat", "room", "both") else "flat"
-    f["src"] = [s for s in f.get("src") or [] if s in SOURCES] or ["olx", "otodom"]
+    f["src"] = [x for x in f.get("src") or [] if x in SOURCES] or list(ALL_SOURCES)
     for k in ("pMin", "pMax", "tMax", "aMin", "aMax", "yearMin"):
         v = num(f.get(k))
         f[k] = int(v) if v else None
@@ -606,7 +780,7 @@ def clean_filters(raw: dict) -> dict:
     f["bt"] = [b for b in f.get("bt") or [] if b in BUILDING]
     f["ex"] = [x for x in f.get("ex") or [] if x in EXTRAS_TEXT]
     f["heat"] = [x for x in f.get("heat") or [] if x in HEATING]
-    f["pref"] = f["pref"] if f.get("pref") in PREF_RU else ""
+    f["pref"] = f["pref"] if f.get("pref") in PREFS else ""
     f["first"] = max(0, min(int(num(f.get("first")) or 0), 10))
     f["excl"] = str(f.get("excl") or "")[:500]
     f["incl"] = str(f.get("incl") or "")[:500]
@@ -652,8 +826,8 @@ class Telegram:
         time.sleep(0.4)
         return res
 
-    def ad(self, cid: str, ad: Ad, label: str) -> dict:
-        cap = render(ad, label)
+    def ad(self, cid: str, ad: Ad, kind: str, lang: str = "ru") -> dict:
+        cap = render(ad, kind, lang)
         res = {"ok": False}
         if ad.photo:
             res = self.call("sendPhoto", {"chat_id": cid, "photo": ad.photo, "caption": cap, "parse_mode": "HTML"})
@@ -663,7 +837,19 @@ class Telegram:
         return res
 
 
-def render(ad: Ad, label: str) -> str:
+def extra_text(code: tuple, lang: str) -> str:
+    k = code[0]
+    if k == "floor":
+        fl = code[1]
+        return t("ground", lang) if fl == 0 else f"{t('floor', lang)} {'10+' if fl == 11 else fl}"
+    if k == "people":
+        return t("people", lang, n=code[1])
+    if k == "prefs":
+        return t("for", lang) + ": " + ", ".join(tr(PREF_T, x, lang) for x in code[1])
+    return t(k, lang)
+
+
+def render(ad: Ad, kind: str, lang: str = "ru") -> str:
     e = html.escape
     head = f"🏠 <b>{fmt_money(ad.price)}</b>"
     if ad.czynsz:
@@ -673,19 +859,20 @@ def render(ad: Ad, label: str) -> str:
         specs.append("4+ pok." if ad.rooms >= 4 else f"{ad.rooms} pok.")
     if ad.area:
         specs.append(f"{ad.area:g} m²")
-    specs += ad.extra
+    specs += [extra_text(tuple(x), lang) for x in ad.extra]
     lines = [head]
     if specs:
         lines.append(" · ".join(e(x) for x in specs))
     if ad.location:
         lines.append(f"📍 {e(ad.location)}")
     lines.append(f'<a href="{e(ad.url, quote=True)}">{e(ad.title[:200])}</a>')
-    who = {True: "частник", False: "агентство"}.get(ad.private, "")
+    who = {True: t("private", lang), False: t("agency", lang)}.get(ad.private, "")
+    label = t("kind_flat" if kind == "flat" else "kind_room", lang)
     lines.append("<i>" + " · ".join(x for x in [ad.source, who, label] if x) + "</i>")
     return "\n".join(lines)[:1020]
 
 
-def webapp_url(f: dict) -> str | None:
+def webapp_url(f: dict, lang: str = "ru") -> str | None:
     base = os.environ.get("WEBAPP_URL")
     if not base:
         repo = os.environ.get("GITHUB_REPOSITORY", "")
@@ -698,15 +885,22 @@ def webapp_url(f: dict) -> str | None:
     if short.get("dist"):
         short["dist"] = [ALL_OSIEDLA.index(d) for d in short["dist"] if d in ALL_OSIEDLA]
     data = base64.urlsafe_b64encode(json.dumps(short, ensure_ascii=False, separators=(",", ":")).encode()).decode().rstrip("=")
-    return f"{base}?f={data}"
+    return f"{base}?l={lang}&f={data}"
 
 
-def keyboard(f: dict) -> dict | None:
-    url = webapp_url(f)
-    if not url:
-        return None
-    return {"keyboard": [[{"text": "⚙️ Фильтры", "web_app": {"url": url}}]],
-            "resize_keyboard": True, "is_persistent": True}
+def keyboard(f: dict, lang: str = "ru") -> dict | None:
+    url = webapp_url(f, lang)
+    rows = [[{"text": t("btn_lang", lang)}]]
+    if url:
+        rows.insert(0, [{"text": t("btn_filters", lang), "web_app": {"url": url}}])
+    return {"keyboard": rows, "resize_keyboard": True, "is_persistent": True}
+
+
+LANG_MENU = {"inline_keyboard": [[{"text": LANG_NAMES["ru"], "callback_data": "lang:ru"},
+                                  {"text": LANG_NAMES["pl"], "callback_data": "lang:pl"}],
+                                 [{"text": LANG_NAMES["en"], "callback_data": "lang:en"},
+                                  {"text": LANG_NAMES["uk"], "callback_data": "lang:uk"}]]}
+LANG_BUTTONS = {T["btn_lang"][x] for x in LANGS}
 
 
 # ---------------------------------------------------------------- состояние
@@ -753,6 +947,12 @@ def load_state(admins: list[str]) -> dict:
             st["users"][a] = u
     st.setdefault("offset", 0)
     st.setdefault("errors", {})
+    for u in st["users"].values():                        # v2: добавились Domiporta и Nieruchomosci-online
+        f = u.get("filters")
+        if f and int(f.get("v") or 1) < 2:
+            f["src"] = list(dict.fromkeys(list(f.get("src") or []) + ["domiporta", "nol"]))
+            f["v"] = 2
+            u["baseline"] = True                          # старые объявления с новых сайтов не шлём
     return st
 
 
@@ -770,38 +970,64 @@ def save_state(st: dict, keep_days: int = 60):
 
 # ---------------------------------------------------------------- сообщения боту
 
-WELCOME = ("Привет! Я ищу квартиры и комнаты на <b>OLX</b> и <b>Otodom</b> и присылаю только новые "
-           "объявления по твоим фильтрам.\n\n"
-           "Нажми <b>⚙️ Фильтры</b> внизу, выбери, что ищешь, и сохрани. Пока фильтры не выбраны, я ничего не присылаю.\n\n"
-           "Проверка новых объявлений — примерно раз в 10 минут. Остановить — переключатель «Поиск на паузе» "
-           "в фильтрах.")
+
 MAX_USERS = int(os.environ.get("MAX_USERS", "300"))
+
+
+def send_welcome(tg: Telegram, cid: str, user: dict) -> None:
+    lang = lang_of(user)
+    tg.text(cid, t("welcome", lang), markup=keyboard(user.get("filters") or DEFAULT_FILTERS, lang))
+
+
+def handle_callback(tg: Telegram, st: dict, cq: dict) -> None:
+    msg = cq.get("message") or {}
+    cid = str((msg.get("chat") or {}).get("id") or (cq.get("from") or {}).get("id"))
+    data = cq.get("data") or ""
+    tg.call("answerCallbackQuery", {"callback_query_id": cq.get("id")})
+    user = st["users"].get(cid)
+    if user is None or not data.startswith("lang:") or data[5:] not in LANGS:
+        return
+    user["lang"] = data[5:]
+    lang = user["lang"]
+    if msg.get("message_id"):
+        tg.call("editMessageText", {"chat_id": cid, "message_id": msg["message_id"], "text": t("lang_set", lang)})
+    if user.get("filters"):
+        f = user["filters"]
+        tg.text(cid, f"{t('your_filters', lang)}\n\n{summary(f, lang)}\n\n"
+                     f"{t('change_hint', lang, btn=t('btn_filters', lang))}", markup=keyboard(f, lang))
+    else:
+        send_welcome(tg, cid, user)
 
 
 def handle_updates(tg: Telegram, st: dict, wait: int = 0) -> None:
     res = tg.call("getUpdates", {"offset": st["offset"] + 1 if st["offset"] else 0, "timeout": wait,
-                                 "allowed_updates": ["message"]}, timeout=wait + 15)
+                                 "allowed_updates": ["message", "callback_query"]}, timeout=wait + 15)
     for upd in res.get("result", []) or []:
         st["offset"] = max(st["offset"], upd["update_id"])
+        if upd.get("callback_query"):
+            handle_callback(tg, st, upd["callback_query"])
+            continue
         msg = upd.get("message") or {}
         chat = msg.get("chat") or {}
         if chat.get("type") != "private":
             continue
         cid = str(chat.get("id"))
         user = st["users"].get(cid)
+        text = (msg.get("text") or "").strip()
         if user is None:
             if len(st["users"]) >= MAX_USERS:
-                tg.text(cid, "Извини, сейчас бот не принимает новых пользователей.")
+                tg.text(cid, t("closed", "en"))
                 continue
             user = st["users"][cid] = new_user()
             log("новый пользователь")
         user["blocked"] = False
+        lang = lang_of(user)
         wad = msg.get("web_app_data")
         if wad:
             try:
                 f = clean_filters(json.loads(wad.get("data") or "{}"))
             except (json.JSONDecodeError, TypeError, ValueError) as ex:
-                tg.text(cid, f"Не смог прочитать фильтры: {html.escape(str(ex))}")
+                tg.text(cid, t("read_error", lang, e=html.escape(str(ex))))
                 continue
             old = user.get("filters") or {}
             only_pause = {k: v for k, v in old.items() if k != "paused"} == {k: v for k, v in f.items() if k != "paused"}
@@ -809,26 +1035,27 @@ def handle_updates(tg: Telegram, st: dict, wait: int = 0) -> None:
             if not only_pause:
                 user["baseline"] = True
             if f["paused"]:
-                head, tail = "⏸ <b>Поиск на паузе.</b>", "\n\nЧтобы продолжить — открой фильтры и выключи паузу."
+                head, tail = t("paused", lang), t("paused_tail", lang)
             else:
-                head = "✅ <b>Фильтры сохранены.</b>"
-                tail = (f"\n\nСейчас пришлю {f['first']} самых свежих подходящих, дальше — только новые."
-                        if not only_pause and f["first"] else "\n\nДальше присылаю только новые объявления.")
-            tg.text(cid, f"{head}\n\n{summary(f)}{tail}", markup=keyboard(f))
-        elif (msg.get("text") or "").startswith("/start") or not user.get("filters"):
-            tg.text(cid, WELCOME, markup=keyboard(user.get("filters") or DEFAULT_FILTERS))
+                head = t("saved", lang)
+                tail = t("first_tail", lang, n=f["first"]) if not only_pause and f["first"] else t("only_new", lang)
+            tg.text(cid, f"{head}\n\n{summary(f, lang)}\n\n{tail}", markup=keyboard(f, lang))
+        elif text.startswith("/start") or text.startswith("/lang") or text in LANG_BUTTONS or not user.get("lang"):
+            tg.text(cid, LANG_PROMPT, markup=LANG_MENU)
+        elif not user.get("filters"):
+            send_welcome(tg, cid, user)
         else:
             f = user["filters"]
-            state = "⏸ Поиск на паузе.\n\n" if f.get("paused") else ""
-            tg.text(cid, f"{state}Твои фильтры:\n\n{summary(f)}\n\nИзменить — кнопка <b>⚙️ Фильтры</b>.",
-                    markup=keyboard(f))
+            state = t("paused", lang) + "\n\n" if f.get("paused") else ""
+            tg.text(cid, f"{state}{t('your_filters', lang)}\n\n{summary(f, lang)}\n\n"
+                         f"{t('change_hint', lang, btn=t('btn_filters', lang))}", markup=keyboard(f, lang))
 
 
 # ---------------------------------------------------------------- поиск
 
-def needs_own_otodom(f: dict, kind: str) -> bool:
-    """Фильтры, которые Otodom не отдаёт в списке объявлений — их можно применить только в запросе."""
-    return kind == "flat" and bool(f.get("bt") or f.get("ex") or f.get("yearMin") or f.get("heat"))
+def needs_own_query(src: str, f: dict, kind: str) -> bool:
+    """Фильтры, которые сайт не показывает в списке — их можно применить только в самом запросе."""
+    return src == "otodom" and kind == "flat" and bool(f.get("bt") or f.get("ex") or f.get("yearMin") or f.get("heat"))
 
 
 class Pages:
@@ -854,17 +1081,18 @@ def search_user(tg: Telegram, st: dict, cid: str, user: dict, pages: Pages, admi
     f = user["filters"]
     baseline = user.get("baseline", True)
     now = datetime.now(timezone.utc).isoformat()
-    found: dict[str, tuple[Ad, str]] = {}
+    found: dict[str, tuple[Ad, str]] = {}           # ключ -> (объявление, flat/room)
     ok_any = False
     for src in f["src"]:
         for kind in kinds(f):
-            label = {"flat": "квартира", "room": "комната"}[kind]
-            if baseline or (src == "otodom" and needs_own_otodom(f, kind)):
-                url = SOURCES[src][0](f, kind)                       # запрос с фильтрами человека
-            else:
-                url = SOURCES[src][0]({"city": f.get("city")}, kind)  # общая лента новых, фильтруем сами
             sid = f"{src}-{kind}-{norm(f.get('city'))}"
             try:
+                if baseline or needs_own_query(src, f, kind):
+                    url = SOURCES[src][0](f, kind)                       # запрос с фильтрами человека
+                else:
+                    url = SOURCES[src][0]({"city": f.get("city")}, kind)  # общая лента новых, фильтруем сами
+                if url is None:
+                    continue                                          # на этом сайте нет такого типа жилья
                 ads = pages.get(src, url)
                 st["errors"].pop(sid, None)
                 ok_any = True
@@ -879,7 +1107,7 @@ def search_user(tg: Telegram, st: dict, cid: str, user: dict, pages: Pages, admi
                 continue
             for a in ads:
                 if a.key not in user["seen"] and a.key not in found and passes(a, f, kind):
-                    found[a.key] = (a, label)
+                    found[a.key] = (a, kind)
     fresh = sorted(found.values(), key=lambda x: x[0].created)
     if baseline:
         if not ok_any:
@@ -891,8 +1119,9 @@ def search_user(tg: Telegram, st: dict, cid: str, user: dict, pages: Pages, admi
     else:
         to_send = fresh[:15]                    # остальное — в следующую проверку
     sent = 0
-    for a, label in to_send:
-        res = tg.ad(cid, a, label)
+    lang = lang_of(user)
+    for a, kind in to_send:
+        res = tg.ad(cid, a, kind, lang)
         if res.get("error_code") == 403:        # человек заблокировал бота
             user["blocked"] = True
             break
