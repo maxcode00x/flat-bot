@@ -1200,6 +1200,46 @@ def parse_webapp(data: str) -> tuple[dict, list[dict]]:
     return clean_settings({"paused": raw.get("paused")}), [f]
 
 
+ADMINS: list[str] = []
+
+
+def admin_report(st: dict, me: str) -> str:
+    """/users — состояние всех пользователей (только для админа): видно, почему кому-то ничего не приходит."""
+    e = html.escape
+    out = [f"👥 Пользователей: {len(st['users'])}"]
+    for i, (cid, u) in enumerate(st["users"].items(), 1):
+        profs = u.get("profiles") or []
+        on = [f for f in profs if f.get("on", True)]
+        sent_dates = sorted(v.get("d") or "" for v in (u.get("sent") or {}).values())
+        flags = []
+        if cid == me:
+            flags.append("это ты")
+        if not u.get("lang"):
+            flags.append("язык не выбран")
+        if not profs:
+            flags.append("❗ фильтры не сохранены")
+        elif not on:
+            flags.append("❗ все профили выключены")
+        if (u.get("settings") or {}).get("paused"):
+            flags.append("⏸ пауза")
+        if u.get("blocked"):
+            flags.append("🚫 заблокировал бота")
+        if is_quiet(u.get("settings") or {}):
+            flags.append("🌙 сейчас тихие часы")
+        if any(b for b, f in zip(u.get("pbase") or [], profs) if f.get("on", True)):
+            flags.append("⏳ ждёт первого поиска")
+        head = (f"\n<b>{i}.</b> <code>{e(cid)}</code> · с {e(u.get('joined') or '?')} · "
+                f"прислано {len(u.get('sent') or {})}, последнее {e(sent_dates[-1] if sent_dates else '—')}, "
+                f"просмотрено {len(u.get('seen') or {})}")
+        out.append(head + ("\n" + " · ".join(flags) if flags else ""))
+        for j, f in enumerate(profs):
+            out.append(("" if f.get("on", True) else "[выкл] ") + summary(f, "ru"))
+    errs = {k: v for k, v in (st.get("errors") or {}).items() if v}
+    if errs:
+        out.append("\n⚠️ Ошибки сайтов: " + e(", ".join(f"{k}×{v}" for k, v in errs.items())))
+    return "\n".join(out)
+
+
 def handle_updates(tg: Telegram, st: dict, wait: int = 0) -> None:
     res = tg.call("getUpdates", {"offset": st["offset"] + 1 if st["offset"] else 0, "timeout": wait,
                                  "allowed_updates": ["message", "callback_query"]}, timeout=wait + 15)
@@ -1253,6 +1293,15 @@ def handle_updates(tg: Telegram, st: dict, wait: int = 0) -> None:
             tg.text(cid, f"{head}\n\n{all_summary(user, lang)}\n\n{tail}", markup=keyboard(user, lang))
         elif text.startswith("/start") or text.startswith("/lang") or text in LANG_BUTTONS or not user.get("lang"):
             tg.text(cid, LANG_PROMPT, markup=LANG_MENU)
+        elif text.startswith("/users") and cid in ADMINS:
+            chunk = ""
+            for line in admin_report(st, cid).split("\n"):   # лимит Telegram — 4096 символов, режем по строкам
+                if len(chunk) + len(line) > 3800:
+                    tg.text(cid, chunk)
+                    chunk = ""
+                chunk += line + "\n"
+            if chunk.strip():
+                tg.text(cid, chunk)
         elif text.startswith("/fav") or text in FAV_BUTTONS:
             send_favorites(tg, cid, user)
         elif not user.get("profiles"):
@@ -1505,6 +1554,7 @@ def search_round(tg: Telegram, st: dict, admins: list[str], only: list[str] | No
 def main() -> int:
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     admins = [c.strip() for c in os.environ.get("TELEGRAM_CHAT_ID", "").split(",") if c.strip()]
+    ADMINS[:] = admins
     dry = os.environ.get("DRY_RUN") == "1" or not token
     if dry:
         log("Нет TELEGRAM_BOT_TOKEN — режим проверки, в Telegram ничего не уходит")
