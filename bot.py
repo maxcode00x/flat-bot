@@ -1261,6 +1261,8 @@ def save_state(st: dict, keep_days: int = 60):
     for u in st["users"].values():
         u["seen"] = {k: v for k, v in u["seen"].items() if v >= cutoff}
         u["hidden"] = {k: v for k, v in u["hidden"].items() if v >= cutoff}
+        if u.get("dups"):
+            u["dups"] = {k: v for k, v in u["dups"].items() if (v[2] or "9") >= cutoff[:10]}
         while len(u["sent"]) > SENT_KEEP:
             u["sent"].pop(next(iter(u["sent"])))
     data = json.dumps(st, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
@@ -1421,7 +1423,7 @@ def admin_report(st: dict, me: str) -> str:
             flags.append("⏳ ждёт первого поиска")
         head = (f"\n<b>{i}.</b> <code>{e(cid)}</code> · с {e(u.get('joined') or '?')} · "
                 f"прислано {len(u.get('sent') or {})}, последнее {e(sent_dates[-1] if sent_dates else '—')}, "
-                f"просмотрено {len(u.get('seen') or {})}")
+                f"просмотрено {len(u.get('seen') or {})}, дублей отсеяно {u.get('dup_skipped', 0)}")
         out.append(head + ("\n" + " · ".join(flags) if flags else ""))
         for j, f in enumerate(profs):
             out.append(("" if f.get("on", True) else "[выкл] ") + summary(f, "ru"))
@@ -1537,6 +1539,52 @@ def is_quiet(settings: dict, now: datetime | None = None) -> bool:
     h = (now or datetime.now(ZoneInfo("Europe/Warsaw"))).hour
     a, b = int(q.get("from", 23)), int(q.get("to", 7))
     return (a <= h < b) if a < b else (h >= a or h < b)
+
+
+# ---------------------------------------------------------------- дубли
+# Одна и та же квартира приходит как новое объявление: на другом сайте, или её перевыложили
+# (агентство поднимает объявление с новым номером), или выставили два агентства на одном сайте.
+
+def dup_keys(ad: Ad) -> list[tuple[str, bool]]:
+    """Отпечатки объявления: (отпечаток, считается ли совпадение на том же сайте)."""
+    out = []
+    fp = fingerprint(ad.price, ad.area, ad.rooms)               # цена + площадь (до 1 m²) + комнаты
+    if fp:
+        out.append(("x:" + fp, False))                           # грубый — только между разными сайтами
+        where = norm((ad.places or [""])[0] or ad.location)[:40]
+        if where:                                                # + точная площадь и место — и на том же сайте
+            out.append((f"s:{ad.site}|{int(round(ad.price))}|{ad.area:.1f}|{ad.rooms or 0}|{where}", True))
+    title = re.sub(r"[^a-z0-9]+", "", norm(ad.title))[:60]
+    if len(title) >= 15 and ad.price:                            # тот же заголовок, цена и площадь — перевыложили
+        out.append((f"t:{ad.site}|{title}|{int(round(ad.price))}|{int(round(ad.area or 0))}", True))
+    return out
+
+
+def user_dups(user: dict) -> dict:
+    d = user.get("dups")
+    if d is None:                                                # переезд: строим из уже присланного
+        d = user["dups"] = {}
+        for k, v in user["sent"].items():
+            if v.get("fp"):
+                d.setdefault("x:" + v["fp"], [k, v.get("s", ""), v.get("d", "")])
+    return d
+
+
+def find_dup(user: dict, ad: Ad) -> str | None:
+    """Ключ уже известного объявления, дублем которого является это, или None."""
+    d = user_dups(user)
+    for fp, same_site in dup_keys(ad):
+        hit = d.get(fp)
+        if hit and hit[0] != ad.key and (same_site or hit[1] != ad.source):
+            return hit[0]
+    return None
+
+
+def mark_seen(user: dict, ad: Ad, now: str) -> None:
+    user["seen"][ad.key] = now
+    d = user_dups(user)
+    for fp, _ in dup_keys(ad):
+        d.setdefault(fp, [ad.key, ad.source, now[:10]])
 
 
 def remember(user: dict, ad: Ad, kind: str, city: str, msg_id: int | None, fp: str | None) -> None:
@@ -1675,12 +1723,12 @@ def search_user(tg: Telegram, st: dict, cid: str, user: dict, pages: Pages, admi
                 todo_keys = {x[0].key for x in todo}
                 for x in items:
                     if x[0].key not in todo_keys:
-                        user["seen"][x[0].key] = now
+                        mark_seen(user, x[0], now)
                 first_send += todo
                 all_mode.append(i)
             else:
                 for x in items:
-                    user["seen"][x[0].key] = now
+                    mark_seen(user, x[0], now)
                 if f["first"]:
                     first_send += items[-f["first"]:]
                 user["pbase"][i] = False
@@ -1701,8 +1749,6 @@ def search_user(tg: Telegram, st: dict, cid: str, user: dict, pages: Pages, admi
         tg.text(cid, t("all_intro", lang, n=n, m=max(1, round(n * 1.2 / 60))))
         user["all_note"] = True
 
-    # индекс отпечатков уже присланного — для склейки дублей с разных сайтов
-    fps = {v["fp"]: (k, v) for k, v in user["sent"].items() if v.get("fp")}
     sent = 0
     interrupted = False
     for item in first_send + queue[:cap]:
@@ -1713,16 +1759,9 @@ def search_user(tg: Telegram, st: dict, cid: str, user: dict, pages: Pages, admi
         if a.key in user["seen"] and item not in first_send:
             continue
         fp = fingerprint(a.price, a.area, a.rooms)
-        if fp and fp in fps and fps[fp][0] != a.key and fps[fp][1].get("s") != a.source:
-            k0, v0 = fps[fp]                      # та же квартира на другом сайте (на одном сайте — не склеиваем)
-            user["seen"][a.key] = now
-            if k0 in user["hidden"]:
-                continue
-            res = tg.text(cid, f"{t('dup', lang, site=a.source)}\n<a href=\"{html.escape(a.url, quote=True)}\">"
-                               f"{html.escape(a.title[:100])}</a>", reply_to=v0.get("m"))
-            if res.get("error_code") == 403:
-                user["blocked"] = True
-                return sent
+        if find_dup(user, a):                     # та же квартира уже была (другой сайт или перевыложили) — молча пропускаем
+            mark_seen(user, a, now)
+            user["dup_skipped"] = user.get("dup_skipped", 0) + 1
             continue
         ev = price_eval(stats, kind, city, a.key, a.price, a.area, a.places, a.zone)
         flags = scam_flags(a.text, ev)
@@ -1733,9 +1772,7 @@ def search_user(tg: Telegram, st: dict, cid: str, user: dict, pages: Pages, admi
             return sent
         msg_id = ((res.get("result") or {}) if isinstance(res.get("result"), dict) else {}).get("message_id")
         remember(user, a, kind, city, msg_id, fp)
-        user["seen"][a.key] = now
-        if fp:
-            fps[fp] = (a.key, user["sent"][a.key])
+        mark_seen(user, a, now)
         sent += 1
     if not interrupted:
         for i in all_mode:
