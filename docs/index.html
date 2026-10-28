@@ -86,6 +86,7 @@
       <button type="button" class="chip" data-v="otodom">Otodom</button>
       <button type="button" class="chip" data-v="domiporta">Domiporta</button>
       <button type="button" class="chip" data-v="nol">Nieruchomosci-online</button>
+      <button type="button" class="chip" data-v="gratka">Gratka/Morizon</button>
     </div>
     <div class="hint" data-i18n="src_hint"></div>
     <div class="row"><span class="label" data-i18n="l_city"></span></div>
@@ -263,7 +264,7 @@ const I18N = {
     title: "Фильтры поиска жилья",
     pause_title: "Поиск на паузе", pause_hint: "Бот не присылает объявления, пока пауза включена",
     h_what: "Что ищу", t_flat: "Квартира", t_room: "Комната", t_both: "Оба",
-    l_where: "Где искать", src_hint: "На Domiporta только квартиры, комнат там нет.", l_city: "Город",
+    l_where: "Где искать", src_hint: "На Domiporta и Gratka/Morizon только квартиры, комнат там нет.", l_city: "Город",
     h_dist: "Районы Щецина", dist_hint: "Ничего не выбрано — весь город. Можно выбрать целый район или отдельные осидла.",
     nodist: "Показывать объявления без указанного района", nodist_hint: "На некоторых сайтах район указан не всегда",
     z_c: "центр", z_n: "север", z_w: "запад", z_e: "правый берег", sel_all: "Выбрать весь район", unsel_all: "Снять все",
@@ -302,7 +303,7 @@ const I18N = {
     title: "Filtry wyszukiwania mieszkań",
     pause_title: "Wyszukiwanie wstrzymane", pause_hint: "Bot nie wysyła ogłoszeń, dopóki pauza jest włączona",
     h_what: "Czego szukam", t_flat: "Mieszkanie", t_room: "Pokój", t_both: "Oba",
-    l_where: "Gdzie szukać", src_hint: "Na Domiporcie są tylko mieszkania, bez pokoi.", l_city: "Miasto",
+    l_where: "Gdzie szukać", src_hint: "Na Domiporcie i Gratce/Morizonie są tylko mieszkania, bez pokoi.", l_city: "Miasto",
     h_dist: "Dzielnice Szczecina", dist_hint: "Nic nie wybrano — całe miasto. Możesz wybrać całą dzielnicę lub pojedyncze osiedla.",
     nodist: "Pokazuj ogłoszenia bez podanej dzielnicy", nodist_hint: "Nie na każdym portalu dzielnica jest podana",
     z_c: "centrum", z_n: "północ", z_w: "zachód", z_e: "prawy brzeg", sel_all: "Zaznacz całą dzielnicę", unsel_all: "Odznacz wszystko",
@@ -341,7 +342,7 @@ const I18N = {
     title: "Home search filters",
     pause_title: "Search paused", pause_hint: "The bot won't send listings while the pause is on",
     h_what: "Looking for", t_flat: "Flat", t_room: "Room", t_both: "Both",
-    l_where: "Where to search", src_hint: "Domiporta has flats only, no rooms.", l_city: "City",
+    l_where: "Where to search", src_hint: "Domiporta and Gratka/Morizon have flats only, no rooms.", l_city: "City",
     h_dist: "Szczecin districts", dist_hint: "Nothing selected means the whole city. Pick a whole district or single neighbourhoods.",
     nodist: "Show listings without a district", nodist_hint: "Some sites don't always state the district",
     z_c: "centre", z_n: "north", z_w: "west", z_e: "right bank", sel_all: "Select whole district", unsel_all: "Clear all",
@@ -380,7 +381,7 @@ const I18N = {
     title: "Фільтри пошуку житла",
     pause_title: "Пошук на паузі", pause_hint: "Бот не надсилає оголошення, поки пауза увімкнена",
     h_what: "Що шукаю", t_flat: "Квартира", t_room: "Кімната", t_both: "Обидва",
-    l_where: "Де шукати", src_hint: "На Domiporta лише квартири, кімнат немає.", l_city: "Місто",
+    l_where: "Де шукати", src_hint: "На Domiporta і Gratka/Morizon лише квартири, кімнат немає.", l_city: "Місто",
     h_dist: "Райони Щецина", dist_hint: "Нічого не обрано — усе місто. Можна обрати цілий район або окремі осідла.",
     nodist: "Показувати оголошення без зазначеного району", nodist_hint: "На деяких сайтах район вказано не завжди",
     z_c: "центр", z_n: "північ", z_w: "захід", z_e: "правий берег", sel_all: "Обрати весь район", unsel_all: "Зняти все",
@@ -428,7 +429,7 @@ const SZCZECIN = {
 };
 const ZONE_KEY = {"Śródmieście": "z_c", "Północ": "z_n", "Zachód": "z_w", "Prawobrzeże": "z_e"};
 const ALL = Object.values(SZCZECIN).flat();
-const DEF = {type:"flat", src:["olx","otodom","domiporta","nol"], city:"szczecin", dist:[], noDist:true, pMin:null, pMax:null, tMax:null,
+const DEF = {type:"flat", src:["olx","otodom","domiporta","nol","gratka"], city:"szczecin", dist:[], noDist:true, pMin:null, pMax:null, tMax:null,
   rooms:[], aMin:null, aMax:null, floors:[], bt:[], ex:[], heat:[], furn:false, pets:false, yearMin:null, ppl:[], pref:"",
   priv:false, excl:"tylko dla kobiet, tylko dla studentek, na doby, krótkoterminowy", incl:"", first:3, paused:false};
 
@@ -532,7 +533,7 @@ function loadProfile(p) {
 function numOrNull(id) { const v = parseInt($(id).value, 10); return Number.isFinite(v) && v > 0 ? v : null; }
 function readProfile() {
   return {
-    v: 2, name: $("pname").value.trim(), on: $("pon").checked,
+    v: 3, name: $("pname").value.trim(), on: $("pon").checked,
     type: getSeg("type") || "flat", src: getMulti("src"), city: $("city").value,
     dist: $("city").value === "szczecin" ? [...zones.querySelectorAll('.dist .chip[aria-pressed="true"]')].map(b => b.dataset.v) : [],
     noDist: $("noDist").checked,

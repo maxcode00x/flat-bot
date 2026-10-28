@@ -25,6 +25,11 @@ from urllib.parse import quote, urlencode
 import requests
 from bs4 import BeautifulSoup
 
+try:                                    # OLX блокирует python-requests по «отпечатку» соединения
+    from curl_cffi import requests as cffi_requests
+except ImportError:                     # pragma: no cover
+    cffi_requests = None
+
 from features import fingerprint, owner_message, price_eval, scam_flags, stats_add
 from i18n import (BUILDING_T, EXTRAS_T, HEATING_T, LANG_NAMES, LANG_PROMPT, LANGS, PREF_T, SCAM_T, T,
                   lang_of, t, tr)
@@ -115,14 +120,16 @@ PREFS = ["man", "women", "student", "working"]
 PEOPLE_OTODOM = {1: "ONE", 2: "TWO", 3: "THREE"}
 PEOPLE_OLX = {1: "one", 2: "two", 3: "three"}
 
-ALL_SOURCES = ["olx", "otodom", "domiporta", "nol"]
+ALL_SOURCES = ["olx", "otodom", "domiporta", "nol", "gratka"]
+OLD_SOURCES = ["olx", "otodom", "domiporta", "nol"]          # набор до v3 (без Gratka/Morizon)
 ALL = 999            # «прислать все текущие объявления» вместо N самых свежих
 ALL_CAP = 250        # но не больше стольких за раз
 MAX_PAGES = 15       # сколько страниц листать на каждом сайте в режиме «Все»
-SOURCE_NAMES = {"olx": "OLX", "otodom": "Otodom", "domiporta": "Domiporta", "nol": "Nieruchomosci-online"}
+SOURCE_NAMES = {"olx": "OLX", "otodom": "Otodom", "domiporta": "Domiporta", "nol": "Nieruchomosci-online",
+                "gratka": "Gratka/Morizon"}
 
 DEFAULT_FILTERS = {
-    "v": 2, "type": "flat", "src": list(ALL_SOURCES), "city": "szczecin", "dist": [], "noDist": True,
+    "v": 3, "type": "flat", "src": list(ALL_SOURCES), "city": "szczecin", "dist": [], "noDist": True,
     "pMin": None, "pMax": None, "tMax": None, "rooms": [], "aMin": None, "aMax": None, "floors": [],
     "bt": [], "ex": [], "heat": [], "furn": False, "pets": False, "yearMin": None, "ppl": [], "pref": "",
     "priv": False, "excl": "tylko dla kobiet, tylko dla studentek, na doby, krótkoterminowy", "incl": "",
@@ -202,17 +209,25 @@ def otodom_token(s: str | None) -> str | None:
     return m.group(1) if m else None
 
 
+IMPERSONATE_HOSTS = ("olx.pl",)          # сайты, которые пускают только «настоящий» браузерный клиент
+
+
 def fetch(url: str, retries: int = 2) -> str:
     last = None
+    browser = cffi_requests is not None and any(h in url.split("/")[2] for h in IMPERSONATE_HOSTS)
     for i in range(retries + 1):
         try:
-            h = dict(HEADERS, Accept="application/json") if "/api/" in url else HEADERS
-            r = requests.get(url, headers=h, timeout=30)
+            if browser:
+                h = {"Accept": "application/json"} if "/api/" in url else {}
+                r = cffi_requests.get(url, headers=h, impersonate="chrome", timeout=30)
+            else:
+                h = dict(HEADERS, Accept="application/json") if "/api/" in url else HEADERS
+                r = requests.get(url, headers=h, timeout=30)
             if r.status_code == 200:
                 return r.text
             last = f"HTTP {r.status_code}"
-        except requests.RequestException as e:
-            last = str(e)
+        except Exception as e:  # noqa: BLE001  (requests и curl_cffi бросают разные исключения)
+            last = str(e)[:200]
         time.sleep(2 + 3 * i)
     raise RuntimeError(f"не удалось загрузить страницу ({last})")
 
@@ -611,8 +626,183 @@ def parse_nol(page: str) -> list[Ad]:
     return ads
 
 
+# ---------------------------------------------------------------- Gratka + Morizon (одна база объявлений, только квартиры)
+
+def gratka_url(f: dict, kind: str, page: int = 1) -> str | None:
+    if kind != "flat":
+        return None                                   # комнат там почти нет
+    city = norm(f.get("city") or "szczecin")
+    if city not in CITY_NAMES:
+        raise RuntimeError(f"Gratka: город «{f.get('city')}» не поддерживается")
+    return f"https://gratka.pl/nieruchomosci/mieszkania/{city}/wynajem?sort=newest" + (f"&page={page}" if page > 1 else "")
+
+
+def nuxt_data(page: str) -> tuple[list, callable]:
+    """Данные страницы Nuxt (__NUXT_DATA__): плоский массив, где значения — ссылки на индексы."""
+    m = re.search(r'<script[^>]*id="__NUXT_DATA__"[^>]*>(.*?)</script>', page, re.S)
+    if not m:
+        raise RuntimeError("Gratka: не найден блок данных (сайт мог измениться или заблокировал запрос)")
+    d = json.loads(m.group(1))
+
+    def res(i, depth=0):
+        if depth > 60 or not isinstance(i, int) or not 0 <= i < len(d):
+            return None
+        x = d[i]
+        if isinstance(x, list):
+            if x and isinstance(x[0], str) and x[0] in ("Reactive", "ShallowReactive", "Ref", "ShallowRef"):
+                return res(x[1], depth + 1) if len(x) > 1 else None
+            return [res(j, depth + 1) for j in x]
+        if isinstance(x, dict):
+            return {k: res(v, depth + 1) for k, v in x.items()}
+        return x
+    return d, res
+
+
+def parse_gratka(page: str) -> list[Ad]:
+    d, res = nuxt_data(page)
+    idx = next((i for i, x in enumerate(d) if isinstance(x, dict) and "properties" in x and "topPromoted" in x), None)
+    if idx is None:
+        raise RuntimeError("Gratka: не найден список объявлений (сайт мог измениться)")
+    props = res(idx).get("properties") or {}
+    nodes = props.get("nodes") if isinstance(props, dict) else props
+    ads = []
+    for n in nodes or []:
+        if not isinstance(n, dict) or not n.get("id"):
+            continue
+        loc = ((n.get("location") or {}).get("location") or [])[1:]       # без воеводства
+        street = (n.get("location") or {}).get("street")
+        city = loc[0] if loc else None
+        parts = [y.strip() for x in loc for y in re.split(r"\s+-\s+", x or "")]   # «Bezrzecze - Krzekowo»
+        places, zone = split_places(parts, city)
+        fl = norm(n.get("floorFormatted") or "")
+        floor = 0 if fl.startswith("parter") else (int(m.group(1)) if (m := re.search(r"(\d+)", fl)) else None)
+        rooms = int(m.group()) if (m := re.match(r"\d+", str(n.get("numberOfRooms") or ""))) else None
+        contact = n.get("contact") or {}
+        types = {(contact.get(k) or {}).get("type") for k in ("company", "person")}
+        private = True if "OWNER" in types else (False if types & {"AGENCY", "AGENT", "DEVELOPER"} else None)
+        photo = None
+        ph = (n.get("photos") or [None])[0]
+        if isinstance(ph, dict) and ph.get("id"):
+            try:
+                photo = base64.b64decode(ph["id"]).decode()
+            except Exception:  # noqa: BLE001
+                photo = None
+        title = (n.get("advertisementText") or n.get("title") or "").strip()
+        ads.append(Ad(
+            key=f"gratka:{n['id']}",
+            source="Gratka/Morizon",
+            site="gratka",
+            title=title,
+            url="https://gratka.pl" + (n.get("url") or ""),
+            price=num(((n.get("price") or {}).get("amount"))),
+            area=num(n.get("area")),
+            rooms=min(rooms, 4) if rooms else None,
+            floor=floor,
+            places=places,
+            zone=zone,
+            location=", ".join(x for x in loc + [street] if x),
+            private=private,
+            photo=photo if photo and photo.startswith("http") else None,
+            text=f"{title} {n.get('description') or ''}",
+            created=str(n.get("refreshedAt") or n.get("addedAt") or ""),
+            extra=extras_codes(floor=floor),
+        ))
+    return ads
+
+
 SOURCES = {"olx": (olx_url, parse_olx), "otodom": (otodom_url, parse_otodom),
-           "domiporta": (domiporta_url, parse_domiporta), "nol": (nol_url, parse_nol)}
+           "domiporta": (domiporta_url, parse_domiporta), "nol": (nol_url, parse_nol),
+           "gratka": (gratka_url, parse_gratka)}
+
+
+# ---------------------------------------------------------------- данные из текста объявления
+# Сайты отдают не все поля. Чего нет в данных — пробуем понять из описания.
+# Итог у каждого признака: True (есть), False (явно нет), None (не сказано — объявление НЕ отсекаем).
+
+_NO = r"(bez|brak\w*|nie ma)\s+(\w+\s+){0,2}"          # «bez windy», «brak w budynku windy»
+EXTRAS_NEG = {
+    "BALCONY": _NO + r"(balkon|loggi)",
+    "TERRACE": _NO + r"taras",
+    "GARDEN": _NO + r"ogrod",
+    "LIFT": _NO + r"wind",
+    "GARAGE": _NO + r"(garaz|miejsc\w* (postojow|parkingow))",
+    "AIR_CONDITIONING": _NO + r"klimatyzac",
+    "SEPARATE_KITCHEN": r"aneks\w* kuchenn|kuchni\w* (otwart|polaczon)|otwart\w* kuchni",
+    "INTERNET": _NO + r"(internet|wi-?fi)",
+}
+FURN_NO = r"nieumeblowan|bez mebli|bez umeblowania|niewyposazon"
+FURN_YES = r"umeblowan|w pelni wyposazon|z meblami|wyposazone w meble"
+PETS_NO = (r"bez zwierz|zwierz\w* (nie sa|nie bed|niedozwol|wykluczon)|nie (akceptuj|przyjmuj)\w* zwierz|"
+           r"zakaz\w* (posiadania )?zwierz|nie dla (osob )?(ze|z) zwierz")
+PETS_YES = (r"zwierz\w* (mile widzian|akceptowan|dozwolon|mozliw|tak\b)|(akceptuj|przyjmuj)\w* zwierz|"
+            r"mozna (ze|z) zwierz|pet.?friendly|przyjazn\w* zwierz")
+OWNER_YES = (r"bez (prowizji|posrednik|posrednictwa|biur)|bezposrednio od wlasciciel|od wlasciciela|"
+             r"wlasciciel prywatny|oferta prywatna|prywatne ogloszenie|nie jestem (biurem|posrednikiem)")
+AGENCY_YES = (r"biur\w* nieruchomosci|prowizj|posrednik|posrednictw|agencj\w* nieruchomosci|"
+              r"licencj\w* (zawodow|nr)|nr licencji|oferta (biura|agencji)")
+BUILDING_RX = [("TENEMENT", r"kamienic"), ("APARTMENT", r"apartamentow(iec|cu|ca)"), ("BLOCK", r"\bw bloku\b|\bblok(u|iem)?\b")]
+FLOOR_RX = r"\b(\d{1,2})\s*(\.|-?(te|szym|gim|cim|tym|mym|ym|im))?\s*pietr(o|ze)\b|\bpietro\s*(\d{1,2})\b"
+
+
+def _rx(rx: str, t: str) -> bool:
+    return bool(re.search(rx, t))
+
+
+def enrich(ad: Ad) -> Ad:
+    """Дополнить пустые поля объявления тем, что написано в тексте."""
+    t = norm(ad.text)
+    if not t:
+        return ad
+    if ad.lift is None:
+        ad.lift = False if _rx(EXTRAS_NEG["LIFT"], t) else (True if _rx(r"wind[aąyz]", t) else None)
+    if ad.furniture is None:
+        ad.furniture = False if _rx(FURN_NO, t) else (True if _rx(FURN_YES, t) else None)
+    if ad.pets is None:
+        ad.pets = False if _rx(PETS_NO, t) else (True if _rx(PETS_YES, t) else None)
+    if ad.private is None:
+        ad.private = True if _rx(OWNER_YES, t) else (False if _rx(AGENCY_YES, t) else None)
+    if ad.building is None:
+        ad.building = next((code for code, rx in BUILDING_RX if _rx(rx, t)), None)
+    if ad.floor is None:
+        if _rx(r"\bparter(ze)?\b", t):
+            ad.floor = 0
+        elif m := re.search(FLOOR_RX, t):
+            n = int(m.group(1) or m.group(5))
+            ad.floor = min(n, 11) if n <= 30 else None
+        if ad.floor is not None and not any(x[0] == "floor" for x in ad.extra):
+            ad.extra.append(("floor", ad.floor))
+    return ad
+
+
+def extra_state(ad: Ad, code: str) -> bool | None:
+    """Есть ли удобство: True / False (явно нет) / None (не сказано)."""
+    if ad.site == "otodom":
+        return True                   # у Otodom этот фильтр стоит прямо в запросе
+    if code == "LIFT" and ad.lift is not None:
+        return ad.lift
+    t = norm(ad.text)
+    if code == "GARAGE" and re.search(r"garaz|strzezony", norm(ad.parking)):
+        return True
+    pos, neg = re.search(EXTRAS_TEXT[code], t), re.search(EXTRAS_NEG[code], t)
+    if code == "SEPARATE_KITCHEN":
+        return True if pos else (False if neg else None)
+    return False if neg else (True if pos else None)
+
+
+def unknowns(ad: Ad, f: dict, kind: str) -> list[str]:
+    """Какие из выбранных фильтров объявление не подтверждает (сайт/текст об этом молчит)."""
+    out = []
+    if f.get("priv") and ad.private is None:
+        out.append("priv")
+    if f.get("furn") and ad.furniture is None:
+        out.append("furn")
+    if kind == "flat":
+        if f.get("pets") and ad.pets is None:
+            out.append("pets")
+        if f.get("bt") and ad.building is None and ad.site != "otodom":
+            out.append("bt")
+        out += [c for c in f.get("ex") or [] if extra_state(ad, c) is None]
+    return out
 
 
 # ---------------------------------------------------------------- фильтры
@@ -679,18 +869,11 @@ def passes(ad: Ad, f: dict, kind: str) -> bool:
             return False
         if f.get("pets") and ad.pets is False:
             return False
-        if ad.site != "otodom":      # фильтры удобств есть только у Otodom — у остальных проверяем текст
-            t = norm(ad.text)
-            for code in f.get("ex") or []:
-                if code == "LIFT" and ad.lift is not None:
-                    if not ad.lift:
-                        return False
-                    continue
-                if code == "GARAGE" and re.search(r"garaz|strzezony", norm(ad.parking)):
-                    continue
-                if not re.search(EXTRAS_TEXT[code], t):
-                    return False
-            if f.get("heat") and not heating_ok(t, f["heat"]):
+        if ad.site != "otodom":      # фильтры удобств есть только у Otodom — у остальных смотрим текст
+            # отсекаем только явное «нет» (bez windy, brak balkonu); если не сказано — присылаем с пометкой ❔
+            if any(extra_state(ad, code) is False for code in f.get("ex") or []):
+                return False
+            if f.get("heat") and not heating_ok(norm(ad.text), f["heat"]):
                 return False
     else:
         if f.get("ppl") and ad.people is not None and ad.people not in {int(p) for p in f["ppl"]}:
@@ -777,7 +960,7 @@ def clean_filters(raw: dict) -> dict:
     for k in DEFAULT_FILTERS:
         if k in raw:
             f[k] = raw[k]
-    f["v"] = 2
+    f["v"] = 3
     f["type"] = f["type"] if f["type"] in ("flat", "room", "both") else "flat"
     f["src"] = [x for x in f.get("src") or [] if x in SOURCES] or list(ALL_SOURCES)
     for k in ("pMin", "pMax", "tMax", "aMin", "aMax", "yearMin"):
@@ -877,7 +1060,7 @@ def ev_line(ev: dict | None, lang: str) -> str | None:
 
 
 def render(ad: Ad, kind: str, lang: str = "ru", ev: dict | None = None, flags: list | None = None,
-           profile: str = "", head: str = "") -> str:
+           profile: str = "", head: str = "", unknown: list | None = None) -> str:
     e = html.escape
     lines = [head] if head else []
     price = f"🏠 <b>{fmt_money(ad.price)}</b>"
@@ -899,6 +1082,9 @@ def render(ad: Ad, kind: str, lang: str = "ru", ev: dict | None = None, flags: l
         lines.append(e(line))
     if flags:
         lines.append(t("scam_head", lang) + " " + e(", ".join(tr(SCAM_T, f, lang) for f in flags)))
+    if unknown:
+        names = [tr(EXTRAS_T, c, lang) if c in EXTRAS_T else t("u_" + c, lang) for c in unknown]
+        lines.append(e(t("unknown", lang) + ": " + ", ".join(names)))
     lines.append(f'<a href="{e(ad.url, quote=True)}">{e(ad.title[:200])}</a>')
     who = {True: t("private", lang), False: t("agency", lang)}.get(ad.private, "")
     label = t("kind_flat" if kind == "flat" else "kind_room", lang)
@@ -1032,6 +1218,11 @@ def upgrade_user(u: dict) -> None:
         u["profiles"] = [f]
         u["pbase"] = [bool(u.get("baseline", False))]
     u.pop("baseline", None)
+    for f in u["profiles"]:                               # v3: добавились Gratka/Morizon
+        if int(f.get("v") or 2) < 3:
+            if set(OLD_SOURCES) <= set(f.get("src") or []):
+                f["src"] = list(f["src"]) + ["gratka"]    # у кого были все сайты — добавляем и новый
+            f["v"] = 3
     while len(u["pbase"]) < len(u["profiles"]):
         u["pbase"].append(True)
 
@@ -1322,11 +1513,13 @@ class Pages:
 
     def __init__(self):
         self.cache: dict[str, list[Ad] | Exception] = {}
+        self.failed: set[str] = set()             # сайты, упавшие в этом проходе (считаем один раз за проход)
+        self.ok: set[str] = set()
 
     def get(self, src: str, url: str) -> list[Ad]:
         if url not in self.cache:
             try:
-                self.cache[url] = SOURCES[src][1](fetch(url))
+                self.cache[url] = [enrich(a) for a in SOURCES[src][1](fetch(url))]
                 time.sleep(1.5)
             except Exception as e:  # noqa: BLE001
                 self.cache[url] = e
@@ -1374,6 +1567,49 @@ def fetch_all(pages: "Pages", src: str, f: dict, kind: str) -> list[Ad]:
     return list(out.values())
 
 
+ALERT_AFTER = 3                 # после стольких неудачных проходов подряд — предупредить админа
+ALERT_REPEAT = 12 * 3600        # и напоминать раз в 12 часов, пока сайт не заработает
+
+
+def _dur(sec: float) -> str:
+    m = int(sec // 60)
+    if m < 60:
+        return f"{m} min"
+    h, d = m // 60, m // 1440
+    return f"{d}d {h % 24}h" if d else f"{h}h"
+
+
+def _admin_lang(st: dict, a: str) -> str:
+    return lang_of(st["users"].get(a))
+
+
+def source_failed(tg: "Telegram", st: dict, sid: str, err: Exception, admins: list[str], pages: "Pages") -> None:
+    if sid in pages.failed:
+        return
+    pages.failed.add(sid)
+    n = st["errors"].get(sid, 0) + 1
+    st["errors"][sid] = n
+    log(f"[{sid}] ошибка: {err}")
+    now = time.time()
+    meta = st.setdefault("err_meta", {}).setdefault(sid, {"since": now - (n - 1) * 600, "alert": 0})
+    if n >= ALERT_AFTER and now - meta.get("alert", 0) >= ALERT_REPEAT:
+        meta["alert"] = now
+        for a in admins:
+            tg.text(a, t("src_down", _admin_lang(st, a), sid=html.escape(sid), h=_dur(now - meta["since"]), n=n)
+                    + f"\n<code>{html.escape(str(err))[:300]}</code>")
+
+
+def source_ok(tg: "Telegram", st: dict, sid: str, admins: list[str], pages: "Pages") -> None:
+    if sid in pages.ok:
+        return
+    pages.ok.add(sid)
+    st["errors"].pop(sid, None)
+    meta = (st.get("err_meta") or {}).pop(sid, None)
+    if meta and meta.get("alert"):
+        for a in admins:
+            tg.text(a, t("src_up", _admin_lang(st, a), sid=html.escape(sid), h=_dur(time.time() - meta["since"])))
+
+
 DEADLINE: list[float] = [0.0]   # после этого времени круг заканчивается — длинную рассылку продолжим в следующем
 
 
@@ -1391,6 +1627,7 @@ def search_user(tg: Telegram, st: dict, cid: str, user: dict, pages: Pages, admi
     drops: dict[str, tuple] = {}
     first_send: list[tuple] = []
     all_mode: list[int] = []                      # профили в режиме «прислать все»
+    unk: dict[str, list[str]] = {}                # ключ -> фильтры, которые объявление не подтверждает
     for i, f in enumerate(profs):
         if not f.get("on", True):
             continue
@@ -1410,22 +1647,17 @@ def search_user(tg: Telegram, st: dict, cid: str, user: dict, pages: Pages, admi
                     if url is None:
                         continue                                          # на этом сайте нет такого типа жилья
                     ads = fetch_all(pages, src, f, kind) if baseline and f["first"] == ALL else pages.get(src, url)
-                    st["errors"].pop(sid, None)
+                    source_ok(tg, st, sid, admins, pages)
                     ok_any = True
                 except Exception as e:  # noqa: BLE001
-                    n = st["errors"].get(sid, 0) + 1
-                    st["errors"][sid] = n
-                    log(f"[{sid}] ошибка: {e}")
-                    if n == 3:
-                        for a in admins:
-                            tg.text(a, f"⚠️ {html.escape(sid)} не отвечает 3 проверки подряд:\n"
-                                       f"<code>{html.escape(str(e))[:300]}</code>")
+                    source_failed(tg, st, sid, e, admins, pages)
                     continue
                 for a in ads:
                     stats_add(stats, kind, city, a.key, a.price, a.area, a.places, a.zone)
                 for a in ads:
                     if a.key in user["hidden"] or not passes(a, f, kind):
                         continue
+                    unk.setdefault(a.key, unknowns(a, f, kind))
                     if baseline:
                         matched.setdefault(a.key, (a, kind, pname, city))
                     elif a.key in user["seen"]:
@@ -1494,7 +1726,7 @@ def search_user(tg: Telegram, st: dict, cid: str, user: dict, pages: Pages, admi
             continue
         ev = price_eval(stats, kind, city, a.key, a.price, a.area, a.places, a.zone)
         flags = scam_flags(a.text, ev)
-        caption = render(a, kind, lang, ev, flags, pname)
+        caption = render(a, kind, lang, ev, flags, pname, unknown=unk.get(a.key))
         res = tg.post(cid, caption, a.photo, ad_markup(a.key, a.url, a.location, lang, a.key in user["fav"], city))
         if res.get("error_code") == 403:                  # человек заблокировал бота
             user["blocked"] = True
@@ -1513,7 +1745,7 @@ def search_user(tg: Telegram, st: dict, cid: str, user: dict, pages: Pages, admi
     for a, kind, pname, city, old_price in list(drops.values())[:10]:
         head = t("drop", lang, old=fmt_money(old_price), new=fmt_money(a.price))
         ev = price_eval(stats, kind, city, a.key, a.price, a.area, a.places, a.zone)
-        caption = render(a, kind, lang, ev, scam_flags(a.text, ev), pname, head=head)
+        caption = render(a, kind, lang, ev, scam_flags(a.text, ev), pname, head=head, unknown=unk.get(a.key))
         res = tg.post(cid, caption, a.photo, ad_markup(a.key, a.url, a.location, lang, a.key in user["fav"], city))
         if res.get("error_code") == 403:
             user["blocked"] = True

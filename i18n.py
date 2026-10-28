@@ -81,6 +81,18 @@ T = {
     "private": {"ru": "частник", "pl": "prywatne", "en": "private", "uk": "приватний"},
     "agency": {"ru": "агентство", "pl": "biuro", "en": "agency", "uk": "агентство"},
     "via": {"ru": "через", "pl": "przez", "en": "via", "uk": "через"},
+    # чего нет в объявлении (фильтр не смог проверить — объявление всё равно присылаем)
+    "unknown": {"ru": "❔ не указано", "pl": "❔ nie podano", "en": "❔ not stated", "uk": "❔ не вказано"},
+    "u_furn": {"ru": "мебель", "pl": "meble", "en": "furniture", "uk": "меблі"},
+    "u_pets": {"ru": "животные", "pl": "zwierzęta", "en": "pets", "uk": "тварини"},
+    "u_priv": {"ru": "частник или агентство", "pl": "prywatne czy biuro", "en": "private or agency",
+               "uk": "приватний чи агентство"},
+    "u_bt": {"ru": "тип дома", "pl": "typ budynku", "en": "building type", "uk": "тип будинку"},
+    # предупреждения админу
+    "src_down": {"ru": "⚠️ <b>{sid}</b> не отвечает уже {h} ({n} проверок подряд):", "pl": "⚠️ <b>{sid}</b> nie odpowiada od {h} ({n} prób z rzędu):",
+                 "en": "⚠️ <b>{sid}</b> has been failing for {h} ({n} checks in a row):", "uk": "⚠️ <b>{sid}</b> не відповідає вже {h} ({n} перевірок поспіль):"},
+    "src_up": {"ru": "✅ <b>{sid}</b> снова работает (лежал {h}).", "pl": "✅ <b>{sid}</b> znowu działa (nie działał {h}).",
+               "en": "✅ <b>{sid}</b> is working again (was down {h}).", "uk": "✅ <b>{sid}</b> знову працює (не працював {h})."},
 }
 
 BUILDING_T = {

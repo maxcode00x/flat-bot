@@ -1,20 +1,19 @@
-import subprocess, json
+import sys, os; sys.path.insert(0, ".")
+import bot
 out=[]
-def P(*a): out.append(" ".join(str(x) for x in a))
-urls=["https://www.olx.pl/api/v1/offers/?offset=0&limit=5&category_id=15&city_id=16705",
-      "https://m.olx.pl/api/v1/offers/?offset=0&limit=5&category_id=15&city_id=16705",
-      "https://olx.pl/api/v1/offers/?offset=0&limit=5&category_id=15&city_id=16705",
-      "https://www.olx.pl/robots.txt"]
-P("IP", subprocess.run(["curl","-s","https://api.ipify.org"],capture_output=True,text=True).stdout)
-for u in urls:
-    r=subprocess.run(["curl","-s","-o","/dev/null","-w","%{http_code}",u,"-H","User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"],capture_output=True,text=True)
-    P("curl",r.stdout,u)
-try:
-    from curl_cffi import requests as cr
-    for imp in ["chrome","safari","firefox"]:
-        for u in urls:
-            try:
-                r=cr.get(u,impersonate=imp,timeout=30); P("cffi",imp,r.status_code,len(r.text),u, r.text[:120].replace("\n"," "))
-            except Exception as e: P("cffi",imp,"EXC",repr(e)[:200])
-except Exception as e: P("no cffi",e)
-open("probe/out2.txt","w").write("\n".join(out)); print("\n".join(out))
+def P(*a): out.append(" ".join(str(x) for x in a)); print(*a, flush=True)
+f = bot.clean_filters({"type":"both","src":bot.ALL_SOURCES,"city":"szczecin","pMax":3500,"ex":["LIFT","BALCONY"],"furn":True})
+pages = bot.Pages()
+for src in bot.ALL_SOURCES:
+    for kind in ["flat","room"]:
+        url = bot.SOURCES[src][0](f, kind)
+        if not url: P(src,kind,"—"); continue
+        try:
+            ads = pages.get(src, url)
+            ok = [a for a in ads if bot.passes(a, f, kind)]
+            P(src, kind, "ads", len(ads), "pass", len(ok))
+            for a in ok[:2]:
+                P("   ", a.key, a.price, a.area, a.rooms, a.floor, a.places, "priv", a.private, "lift", a.lift, "unk", bot.unknowns(a,f,kind))
+        except Exception as e:
+            P(src, kind, "ERR", repr(e)[:300])
+open("probe/out3.txt","w").write("\n".join(out))
