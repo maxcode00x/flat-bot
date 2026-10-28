@@ -1,0 +1,26 @@
+olx flat ads 62 pass 62
+    olx:1103720157 2800.0 32.0 2 8 ['Centrum'] priv False lift True unk ['BALCONY']
+    olx:1098158850 2500.0 34.83 2 1 ['Centrum'] priv False lift True unk []
+olx room ads 61 pass 59
+    olx:1103051711 1500.0 None None None ['Niebuszewo'] priv True lift None unk []
+    olx:1025324750 1300.0 None None None ['Pogodno'] priv True lift None unk []
+otodom flat ads 73 pass 73
+    otodom:ID4DJl5 2100.0 24.15 1 2 ['Łasztownia'] priv False lift None unk ['furn']
+    otodom:ID4DJjz 1800.0 24.0 1 4 ['Śródmieście-Zachód'] priv False lift None unk ['furn']
+otodom room ads 15 pass 15
+    otodom:ID4DGSX 1350.0 20.0 None None ['Śródmieście-Północ'] priv True lift None unk ['furn']
+    otodom:ID4DBJY 1200.0 10.5 None None ['Gumieńce'] priv True lift None unk ['furn']
+domiporta flat ads 60 pass 60
+    domiporta:156986900 2500.0 58.6 2 0 ['Bezrzecze'] priv None lift None unk ['furn', 'LIFT', 'BALCONY']
+    domiporta:156986631 2000.0 33.86 1 None ['Żelechowa', 'HOŻA'] priv None lift None unk ['furn', 'LIFT', 'BALCONY']
+domiporta room —
+nol flat ads 40 pass 37
+    nol:26580113 2200.0 25.0 1 7 ['Centrum'] priv None lift None unk ['LIFT']
+    nol:27001449 2990.0 38.0 2 2 ['Międzyodrze-Wyspa Pucka'] priv None lift None unk ['LIFT', 'BALCONY']
+nol room ads 2 pass 2
+    nol:26888454 850.0 8.8 None 2 ['Centrum'] priv None lift None unk []
+    nol:27055326 900.0 12.0 None 3 ['Niebuszewo'] priv None lift None unk []
+gratka flat ads 35 pass 32
+    gratka:1543228875 2500.0 42.0 2 1 ['Stare Miasto'] priv False lift None unk ['LIFT', 'BALCONY']
+    gratka:1543224203 2000.0 30.0 2 4 ['Drzetowo-Grabowo'] priv False lift None unk ['furn', 'LIFT', 'BALCONY']
+gratka room —
