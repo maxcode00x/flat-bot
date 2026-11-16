@@ -120,13 +120,11 @@ PREFS = ["man", "women", "student", "working"]
 PEOPLE_OTODOM = {1: "ONE", 2: "TWO", 3: "THREE"}
 PEOPLE_OLX = {1: "one", 2: "two", 3: "three"}
 
-ALL_SOURCES = ["olx", "otodom", "domiporta", "nol", "gratka"]
-OLD_SOURCES = ["olx", "otodom", "domiporta", "nol"]          # набор до v3 (без Gratka/Morizon)
+ALL_SOURCES = ["olx", "otodom", "domiporta", "nol"]          # Gratka/Morizon убрана (16.11.2026 — плохо работала)
 ALL = 999            # «прислать все текущие объявления» вместо N самых свежих
 ALL_CAP = 250        # но не больше стольких за раз
 MAX_PAGES = 15       # сколько страниц листать на каждом сайте в режиме «Все»
-SOURCE_NAMES = {"olx": "OLX", "otodom": "Otodom", "domiporta": "Domiporta", "nol": "Nieruchomosci-online",
-                "gratka": "Gratka/Morizon"}
+SOURCE_NAMES = {"olx": "OLX", "otodom": "Otodom", "domiporta": "Domiporta", "nol": "Nieruchomosci-online"}
 
 DEFAULT_FILTERS = {
     "v": 3, "type": "flat", "src": list(ALL_SOURCES), "city": "szczecin", "dist": [], "noDist": True,
@@ -626,93 +624,8 @@ def parse_nol(page: str) -> list[Ad]:
     return ads
 
 
-# ---------------------------------------------------------------- Gratka + Morizon (одна база объявлений, только квартиры)
-
-def gratka_url(f: dict, kind: str, page: int = 1) -> str | None:
-    if kind != "flat":
-        return None                                   # комнат там почти нет
-    city = norm(f.get("city") or "szczecin")
-    if city not in CITY_NAMES:
-        raise RuntimeError(f"Gratka: город «{f.get('city')}» не поддерживается")
-    return f"https://gratka.pl/nieruchomosci/mieszkania/{city}/wynajem?sort=newest" + (f"&page={page}" if page > 1 else "")
-
-
-def nuxt_data(page: str) -> tuple[list, callable]:
-    """Данные страницы Nuxt (__NUXT_DATA__): плоский массив, где значения — ссылки на индексы."""
-    m = re.search(r'<script[^>]*id="__NUXT_DATA__"[^>]*>(.*?)</script>', page, re.S)
-    if not m:
-        raise RuntimeError("Gratka: не найден блок данных (сайт мог измениться или заблокировал запрос)")
-    d = json.loads(m.group(1))
-
-    def res(i, depth=0):
-        if depth > 60 or not isinstance(i, int) or not 0 <= i < len(d):
-            return None
-        x = d[i]
-        if isinstance(x, list):
-            if x and isinstance(x[0], str) and x[0] in ("Reactive", "ShallowReactive", "Ref", "ShallowRef"):
-                return res(x[1], depth + 1) if len(x) > 1 else None
-            return [res(j, depth + 1) for j in x]
-        if isinstance(x, dict):
-            return {k: res(v, depth + 1) for k, v in x.items()}
-        return x
-    return d, res
-
-
-def parse_gratka(page: str) -> list[Ad]:
-    d, res = nuxt_data(page)
-    idx = next((i for i, x in enumerate(d) if isinstance(x, dict) and "properties" in x and "topPromoted" in x), None)
-    if idx is None:
-        raise RuntimeError("Gratka: не найден список объявлений (сайт мог измениться)")
-    props = res(idx).get("properties") or {}
-    nodes = props.get("nodes") if isinstance(props, dict) else props
-    ads = []
-    for n in nodes or []:
-        if not isinstance(n, dict) or not n.get("id"):
-            continue
-        loc = ((n.get("location") or {}).get("location") or [])[1:]       # без воеводства
-        street = (n.get("location") or {}).get("street")
-        city = loc[0] if loc else None
-        parts = [y.strip() for x in loc for y in re.split(r"\s+-\s+", x or "")]   # «Bezrzecze - Krzekowo»
-        places, zone = split_places(parts, city)
-        fl = norm(n.get("floorFormatted") or "")
-        floor = 0 if fl.startswith("parter") else (int(m.group(1)) if (m := re.search(r"(\d+)", fl)) else None)
-        rooms = int(m.group()) if (m := re.match(r"\d+", str(n.get("numberOfRooms") or ""))) else None
-        contact = n.get("contact") or {}
-        types = {(contact.get(k) or {}).get("type") for k in ("company", "person")}
-        private = True if "OWNER" in types else (False if types & {"AGENCY", "AGENT", "DEVELOPER"} else None)
-        photo = None
-        ph = (n.get("photos") or [None])[0]
-        if isinstance(ph, dict) and ph.get("id"):
-            try:
-                photo = base64.b64decode(ph["id"]).decode()
-            except Exception:  # noqa: BLE001
-                photo = None
-        title = (n.get("advertisementText") or n.get("title") or "").strip()
-        ads.append(Ad(
-            key=f"gratka:{n['id']}",
-            source="Gratka/Morizon",
-            site="gratka",
-            title=title,
-            url="https://gratka.pl" + (n.get("url") or ""),
-            price=num(((n.get("price") or {}).get("amount"))),
-            area=num(n.get("area")),
-            rooms=min(rooms, 4) if rooms else None,
-            floor=floor,
-            places=places,
-            zone=zone,
-            location=", ".join(x for x in loc + [street] if x),
-            private=private,
-            photo=photo if photo and photo.startswith("http") else None,
-            text=f"{title} {n.get('description') or ''}",
-            created=str(n.get("refreshedAt") or n.get("addedAt") or ""),
-            extra=extras_codes(floor=floor),
-        ))
-    return ads
-
-
 SOURCES = {"olx": (olx_url, parse_olx), "otodom": (otodom_url, parse_otodom),
-           "domiporta": (domiporta_url, parse_domiporta), "nol": (nol_url, parse_nol),
-           "gratka": (gratka_url, parse_gratka)}
+           "domiporta": (domiporta_url, parse_domiporta), "nol": (nol_url, parse_nol)}
 
 
 # ---------------------------------------------------------------- данные из текста объявления
@@ -1218,11 +1131,9 @@ def upgrade_user(u: dict) -> None:
         u["profiles"] = [f]
         u["pbase"] = [bool(u.get("baseline", False))]
     u.pop("baseline", None)
-    for f in u["profiles"]:                               # v3: добавились Gratka/Morizon
-        if int(f.get("v") or 2) < 3:
-            if set(OLD_SOURCES) <= set(f.get("src") or []):
-                f["src"] = list(f["src"]) + ["gratka"]    # у кого были все сайты — добавляем и новый
-            f["v"] = 3
+    for f in u["profiles"]:                               # убираем сайты, которых больше нет (Gratka/Morizon)
+        f["src"] = [x for x in f.get("src") or [] if x in SOURCES] or list(ALL_SOURCES)
+        f["v"] = 3
     while len(u["pbase"]) < len(u["profiles"]):
         u["pbase"].append(True)
 

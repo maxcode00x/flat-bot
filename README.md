@@ -1,6 +1,6 @@
-# Бот поиска жилья — OLX, Otodom, Domiporta, Nieruchomosci-online, Gratka/Morizon → Telegram
+# Бот поиска жилья — OLX, Otodom, Domiporta, Nieruchomosci-online → Telegram
 
-Каждые ~10 минут проверяет OLX, Otodom, Domiporta, Nieruchomosci-online и Gratka/Morizon и присылает
+Каждые ~10 минут проверяет OLX, Otodom, Domiporta и Nieruchomosci-online и присылает
 в Telegram новые объявления по фильтрам каждого пользователя. Языки: русский, польский,
 английский, украинский (выбор при /start или кнопкой 🌐). Фильтры выбираются кнопкой **⚙️ Фильтры** прямо в боте.
 Работает на GitHub Actions — компьютер включать не нужно.
@@ -39,7 +39,6 @@ Branch: **main**, папка **/docs** → Save.
 На OLX нет фильтров балкона, кухни и т. п. — их бот ищет в тексте объявления.
 Отсекается только явное «нет» (bez windy, brak balkonu, nieumeblowane, bez zwierząt). Если в объявлении
 об этом не сказано, оно всё равно приходит со строкой «❔ не указано: лифт, мебель».
-Gratka и Morizon — одна база объявлений, поэтому это один источник (только квартиры).
 Мебель, животные и «кому сдают» есть только на OLX, год постройки — только на Otodom.
 
 ## Что умеет бот
